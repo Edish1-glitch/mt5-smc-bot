@@ -281,11 +281,14 @@ def _fetch_from_yfinance(symbol, timeframe, date_from, date_to):
         raise ValueError(f"Unsupported timeframe for yfinance: {timeframe}")
 
     max_days = _YF_MAX_DAYS.get(timeframe, 9999)
-    req_days = (datetime.fromisoformat(date_to) - datetime.fromisoformat(date_from)).days
-    if req_days > max_days:
-        eff_from = (datetime.fromisoformat(date_to) - timedelta(days=max_days)).strftime("%Y-%m-%d")
-        print(f"  [yfinance] ⚠  {timeframe} limited to {max_days} days → using {eff_from}")
-        date_from = eff_from
+    today    = datetime.now(timezone.utc)
+    # yfinance intraday limit is measured from TODAY, not from date_to
+    earliest = (today - timedelta(days=max_days)).strftime("%Y-%m-%d")
+    if date_from < earliest:
+        print(f"  [yfinance] ⚠  {timeframe} data only available from {earliest} onwards (today-{max_days}d)")
+        date_from = earliest
+    if date_to > today.strftime("%Y-%m-%d"):
+        date_to = today.strftime("%Y-%m-%d")
 
     df = yf.Ticker(yf_sym).history(start=date_from, end=date_to,
                                     interval=interval, auto_adjust=True)
