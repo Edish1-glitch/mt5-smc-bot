@@ -282,18 +282,35 @@ def _fetch_from_yfinance(symbol, timeframe, date_from, date_to):
 
     max_days = _YF_MAX_DAYS.get(timeframe, 9999)
     today    = datetime.now(timezone.utc)
-    # yfinance intraday limit is measured from TODAY, not from date_to
-    earliest = (today - timedelta(days=max_days)).strftime("%Y-%m-%d")
-    if date_from < earliest:
-        print(f"  [yfinance] ⚠  {timeframe} data only available from {earliest} onwards (today-{max_days}d)")
-        date_from = earliest
-    if date_to > today.strftime("%Y-%m-%d"):
-        date_to = today.strftime("%Y-%m-%d")
+    earliest = (today - timedelta(days=max_days - 2)).strftime("%Y-%m-%d")
 
-    df = yf.Ticker(yf_sym).history(start=date_from, end=date_to,
-                                    interval=interval, auto_adjust=True)
+    # For intraday data: always use period= instead of start/end (more reliable)
+    use_period = max_days < 9999
+    if use_period:
+        if date_from < earliest:
+            print(f"  [yfinance] ⚠  {timeframe} limited to last {max_days} days from today")
+        period_str = f"{max_days}d"
+    else:
+        if date_from < earliest:
+            date_from = earliest
+
+    ticker = yf.Ticker(yf_sym)
+    if use_period:
+        df = ticker.history(period=period_str, interval=interval, auto_adjust=True)
+    else:
+        df = ticker.history(start=date_from, end=date_to,
+                            interval=interval, auto_adjust=True)
+
     if df.empty:
-        raise RuntimeError(f"No yfinance data for {yf_sym} {interval}")
+        raise RuntimeError(
+            f"yfinance: no data for {yf_sym} ({interval}).\n"
+            f"Forex M15 data is unreliable on Yahoo Finance.\n"
+            f"Get a free OANDA demo token (2 min) and run:\n"
+            f"  export OANDA_TOKEN=<token>\n"
+            f"  python3 main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01\n"
+            f"Register: https://www.oanda.com/register/#/sign-up/demo\n"
+            f"Token: https://www.oanda.com/account/api-user-tokens"
+        )
 
     df = df.rename(columns={"Open": "open", "High": "high",
                              "Low": "low",  "Close": "close", "Volume": "volume"})
