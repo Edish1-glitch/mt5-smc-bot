@@ -1,0 +1,9 @@
+pandas>=2.0
+numpy>=1.24
+pyarrow>=12.0
+matplotlib>=3.7
+mplfinance>=0.12
+pytest>=7.0
+
+# Windows only (MT5 data download):
+# MetaTrader5>=5.0
