@@ -5,5 +5,12 @@ matplotlib>=3.7
 mplfinance>=0.12
 pytest>=7.0
 
-# Windows only (MT5 data download):
+# Mac/Linux data source (yfinance — free, limited intraday history):
+yfinance>=0.2.28
+
+# MT5 Bridge mode (Mac → Windows VPS):
+requests>=2.28
+flask>=3.0       # only needed on the Windows server running mt5_bridge/server.py
+
+# Windows only (direct MT5 connection):
 # MetaTrader5>=5.0
