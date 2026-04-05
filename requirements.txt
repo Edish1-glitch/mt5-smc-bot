@@ -5,22 +5,23 @@ matplotlib>=3.7
 mplfinance>=0.12
 pytest>=7.0
 
-# ── Mac/Linux data sources (choose one) ─────────────────────────────────────
-
-# Option A — yfinance (zero setup, limited to 60d M15 / 730d H1):
-yfinance>=0.2.28
-
-# Option B — MetaApi (FREE cloud bridge to your MT5 demo, years of history):
-#   1. Register: https://app.metaapi.cloud  (Community plan, no credit card)
-#   2. Add your MT5 demo account credentials
-#   3. export METAAPI_TOKEN=...  METAAPI_ACCOUNT_ID=...
-metaapi-cloud-sdk>=27.0.0
-
-# HTTP client (used by bridge + metaapi fallback):
+# HTTP client — used by oanda + bridge sources
 requests>=2.28
 
-# MT5 Bridge server (only on Windows machine running mt5_bridge/server.py):
+# ── Data sources (choose one) ────────────────────────────────────────────────
+
+# Option A — OANDA (המומלץ: חינם לגמרי, שנים של נתוני M15/H1 אמיתיים)
+#   1. https://www.oanda.com/register/#/sign-up/demo  (ללא כרטיס אשראי)
+#   2. My Account → Manage API Access → Generate token
+#   3. export OANDA_TOKEN=<token>
+#   4. python main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01
+#   (אין חבילה לדייב — OANDA API הוא HTTP ישיר, requests מספיק)
+
+# Option B — yfinance (ללא הגדרה, אבל M15=60 יום בלבד)
+yfinance>=0.2.28
+
+# Option C — MT5 bridge server (mt5_bridge/server.py על Windows)
 flask>=3.0
 
-# Windows only (direct MT5 connection):
+# Windows only — גישה ישירה ל-MT5
 # MetaTrader5>=5.0
