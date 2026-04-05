@@ -2,34 +2,46 @@
 main.py — Entry point for the SMC/ICT backtest.
 
 Usage:
-    # Run backtest on EURUSD from 2020 to 2024:
+    # Mac/Linux (yfinance, אוטומטי):
+    python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01
+
+    # Mac דרך MT5 bridge (Windows VPS):
+    export MT5_BRIDGE_URL=http://<windows-ip>:5000
+    python main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01
+
+    # Windows עם MT5:
     python main.py --symbol EURUSD --from 2020-01-01 --to 2024-01-01
 
-    # Run on multiple symbols:
-    python main.py --symbol EURUSD XAUUSD NAS100 --from 2022-01-01 --to 2024-01-01
+    # בחירת מקור ידנית:
+    python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --source yfinance
+    python main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01 --source bridge
+    python main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01 --source mt5
 
-    # Run and show visual trade review charts:
-    python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --review
-
-    # Load data from CSV instead of MT5 (for Linux/Mac):
+    # מ-CSV (Export מ-MT5):
     python main.py --symbol EURUSD --csv-m15 eurusd_m15.csv --csv-h1 eurusd_h1.csv \
                    --from 2022-01-01 --to 2024-01-01
 
+    # ביקורת ויזואלית של עסקאות:
+    python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --review
+
 Options:
-    --symbol   : one or more MT5 symbol names
-    --from     : start date (YYYY-MM-DD)
-    --to       : end date (YYYY-MM-DD)
-    --review   : show candlestick charts of detected trades
-    --csv-m15  : path to CSV file for 15M data (skips MT5 download)
-    --csv-h1   : path to CSV file for 1H data
-    --risk     : USD risk per trade (default: 500)
+    --symbol   : סמל/ים (e.g. EURUSD XAUUSD NAS100)
+    --from     : תאריך התחלה YYYY-MM-DD
+    --to       : תאריך סיום YYYY-MM-DD
+    --source   : auto | mt5 | yfinance | bridge  (default: auto)
+    --review   : הצגת גרפי נרות לכל עסקה
+    --csv-m15  : נתיב CSV לנתוני 15M
+    --csv-h1   : נתיב CSV לנתוני 1H
+    --risk     : סיכון USD לעסקה (default: 500)
 """
 
 import argparse
+import os
 import sys
+import platform
 
 import config
-from data.fetcher import get_ohlcv, load_from_csv
+from data.fetcher import get_ohlcv, load_from_csv, _detect_source
 from backtest.engine import run_backtest
 from backtest.results import compute_stats, print_stats
 
@@ -42,6 +54,9 @@ def parse_args():
                    help="Start date YYYY-MM-DD")
     p.add_argument("--to",     dest="date_to",   required=True,
                    help="End date YYYY-MM-DD")
+    p.add_argument("--source", default="auto",
+                   choices=["auto", "mt5", "oanda", "yfinance", "bridge"],
+                   help="Data source (default: auto-detect)")
     p.add_argument("--review", action="store_true",
                    help="Show candlestick chart review after backtest")
     p.add_argument("--csv-m15", dest="csv_m15", default=None,
@@ -57,6 +72,14 @@ def main():
     args = parse_args()
     all_stats = {}
 
+    # Show active source
+    active_source = args.source if args.source != "auto" else _detect_source()
+    bridge_url = os.environ.get("MT5_BRIDGE_URL", "")
+    print(f"\n  Platform: {platform.system()}  |  Data source: {active_source}", end="")
+    if active_source == "bridge":
+        print(f"  →  {bridge_url}", end="")
+    print()
+
     for symbol in args.symbol:
         print(f"\nLoading data for {symbol}...")
 
@@ -65,14 +88,14 @@ def main():
             m15_df = load_from_csv(args.csv_m15, symbol, "M15")
             m15_df = m15_df[args.date_from: args.date_to]
         else:
-            m15_df = get_ohlcv(symbol, "M15", args.date_from, args.date_to)
+            m15_df = get_ohlcv(symbol, "M15", args.date_from, args.date_to, source=args.source)
 
         # Load 1H data
         if args.csv_h1:
             h1_df = load_from_csv(args.csv_h1, symbol, "H1")
             h1_df = h1_df[args.date_from: args.date_to]
         else:
-            h1_df = get_ohlcv(symbol, "H1", args.date_from, args.date_to)
+            h1_df = get_ohlcv(symbol, "H1", args.date_from, args.date_to, source=args.source)
 
         print(f"  15M bars: {len(m15_df):,}  |  1H bars: {len(h1_df):,}")
 
