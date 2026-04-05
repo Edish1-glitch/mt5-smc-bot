@@ -2,17 +2,23 @@
 data/fetcher.py — Historical OHLCV data download and caching.
 
 Sources (selected automatically or via --source flag):
-  'mt5'      — MetaTrader5 Python lib (Windows only, MT5 must be running)
-  'yfinance' — Yahoo Finance via yfinance (Mac/Linux, free, limited history)
-  'bridge'   — MT5 REST bridge server (any OS → Windows VPS running mt5_bridge/server.py)
-               Set env var MT5_BRIDGE_URL=http://<host>:5000
+  'mt5'       — MetaTrader5 Python lib (Windows only, MT5 must be running)
+  'yfinance'  — Yahoo Finance (Mac/Linux, free, M15=60 days / H1=730 days)
+  'metaapi'   — MetaApi cloud (FREE, connects real MT5 demo from any OS)
+                 הגדרה חד-פעמית ב-5 דקות → https://app.metaapi.cloud
+                 export METAAPI_TOKEN=<token>
+                 export METAAPI_ACCOUNT_ID=<account_id>
+  'bridge'    — MT5 REST bridge server (mt5_bridge/server.py על Windows)
+                 export MT5_BRIDGE_URL=http://<host>:5000
 
-Auto-detection order: bridge (if MT5_BRIDGE_URL set) → mt5 (Windows) → yfinance
+Auto-detection order:
+  metaapi (if METAAPI_TOKEN set) → bridge (if MT5_BRIDGE_URL set)
+  → mt5 (Windows) → yfinance
 
 Usage:
     from data.fetcher import get_ohlcv
     df = get_ohlcv("EURUSD", "H1", "2020-01-01", "2024-01-01")
-    df = get_ohlcv("EURUSD", "H1", "2020-01-01", "2024-01-01", source="yfinance")
+    df = get_ohlcv("EURUSD", "H1", "2020-01-01", "2024-01-01", source="metaapi")
 """
 
 import os
@@ -77,6 +83,8 @@ _YF_MAX_DAYS = {
 
 def _detect_source() -> str:
     """Auto-detect the best available data source."""
+    if os.environ.get("METAAPI_TOKEN"):
+        return "metaapi"
     if os.environ.get("MT5_BRIDGE_URL"):
         return "bridge"
     if platform.system() == "Windows":
@@ -118,10 +126,12 @@ def get_ohlcv(
         df = _fetch_from_mt5(symbol, timeframe, date_from, date_to)
     elif source == "yfinance":
         df = _fetch_from_yfinance(symbol, timeframe, date_from, date_to)
+    elif source == "metaapi":
+        df = _fetch_from_metaapi(symbol, timeframe, date_from, date_to)
     elif source == "bridge":
         df = _fetch_from_bridge(symbol, timeframe, date_from, date_to)
     else:
-        raise ValueError(f"Unknown source: {source!r}. Use 'mt5', 'yfinance', or 'bridge'.")
+        raise ValueError(f"Unknown source: {source!r}. Use 'mt5', 'yfinance', 'metaapi', or 'bridge'.")
 
     df.to_parquet(cache_path)
     return df
@@ -218,6 +228,116 @@ def _fetch_from_yfinance(symbol: str, timeframe: str, date_from: str, date_to: s
     df.index = pd.to_datetime(df.index, utc=True)
     df.index.name = "time"
     return df.sort_index()
+
+
+# ── MetaApi source (free cloud MT5 bridge) ───────────────────────────────────
+
+_METAAPI_TF = {
+    "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
+    "H1": "1h", "H4": "4h", "D1": "1d",
+}
+
+def _fetch_from_metaapi(symbol: str, timeframe: str, date_from: str, date_to: str) -> pd.DataFrame:
+    """
+    Fetch historical OHLCV from MetaApi cloud — connects to your real MT5 demo account.
+
+    הגדרה חד-פעמית (חינם, אין כרטיס אשראי):
+      1. הרשם: https://app.metaapi.cloud  (Community plan = חינם)
+      2. Add Account → הכנס פרטי חשבון MT5 הדמו שלך (Broker, Login, Password, Server)
+      3. Dashboard → Copy API Token
+      4. Dashboard → Accounts → Copy Account ID
+      5. הגדר משתני סביבה:
+            export METAAPI_TOKEN=eyJ...
+            export METAAPI_ACCOUNT_ID=abc123...
+      6. הרץ:
+            python main.py --symbol EURUSD --from 2023-01-01 --to 2024-01-01
+    """
+    try:
+        from metaapi_cloud_sdk import MetaApi
+    except ImportError:
+        raise RuntimeError(
+            "metaapi-cloud-sdk not installed. Run:\n"
+            "  pip install metaapi-cloud-sdk\n\n"
+            "Then register free at https://app.metaapi.cloud and set:\n"
+            "  export METAAPI_TOKEN=<your-token>\n"
+            "  export METAAPI_ACCOUNT_ID=<your-account-id>"
+        )
+
+    import asyncio
+    from datetime import datetime, timezone
+
+    token      = os.environ.get("METAAPI_TOKEN", "")
+    account_id = os.environ.get("METAAPI_ACCOUNT_ID", "")
+    if not token or not account_id:
+        raise RuntimeError(
+            "Set environment variables:\n"
+            "  export METAAPI_TOKEN=<token>\n"
+            "  export METAAPI_ACCOUNT_ID=<account_id>\n"
+            "Get them from https://app.metaapi.cloud"
+        )
+
+    tf = _METAAPI_TF.get(timeframe)
+    if tf is None:
+        raise ValueError(f"Unsupported timeframe for MetaApi: {timeframe}")
+
+    dt_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+    dt_to   = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
+
+    async def _download():
+        api = MetaApi(token)
+        try:
+            account = await api.metatrader_account_api.get_account(account_id)
+
+            # Deploy account if needed (first run only — takes ~1 min)
+            if account.state not in ("DEPLOYED", "DEPLOYING"):
+                print("  [MetaApi] Deploying account (first run, ~60s)...")
+                await account.deploy()
+
+            print(f"  [MetaApi] Connecting to MT5 account...")
+            await account.wait_connected(timeout_in_seconds=120)
+
+            all_candles = []
+            current     = dt_from
+            print(f"  [MetaApi] Downloading {symbol} {timeframe} "
+                  f"{date_from} → {date_to} ...")
+
+            while current < dt_to:
+                batch = await account.get_historical_candles(
+                    symbol=symbol,
+                    timeframe=tf,
+                    start_time=current,
+                    limit=1000,
+                )
+                if not batch:
+                    break
+                # filter to requested range
+                batch = [c for c in batch
+                         if pd.to_datetime(c["time"]) < dt_to]
+                if not batch:
+                    break
+                all_candles.extend(batch)
+                last_ts = pd.to_datetime(batch[-1]["time"])
+                if last_ts <= current:
+                    break
+                current = last_ts
+                print(f"    ...{len(all_candles):,} bars, up to {last_ts.date()}")
+
+            return all_candles
+        finally:
+            api.close()
+
+    candles = asyncio.run(_download())
+
+    if not candles:
+        raise RuntimeError(f"No data returned from MetaApi for {symbol} {timeframe}")
+
+    df = pd.DataFrame(candles)
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    df = df.set_index("time")
+    df = df.rename(columns={"tickVolume": "volume"})
+    df = df[["open", "high", "low", "close", "volume"]].sort_index()
+    # trim to requested range
+    return df[date_from:date_to]
 
 
 # ── MT5 Bridge source ─────────────────────────────────────────────────────────

@@ -55,7 +55,7 @@ def parse_args():
     p.add_argument("--to",     dest="date_to",   required=True,
                    help="End date YYYY-MM-DD")
     p.add_argument("--source", default="auto",
-                   choices=["auto", "mt5", "yfinance", "bridge"],
+                   choices=["auto", "mt5", "yfinance", "metaapi", "bridge"],
                    help="Data source (default: auto-detect)")
     p.add_argument("--review", action="store_true",
                    help="Show candlestick chart review after backtest")
