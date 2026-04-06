@@ -2,13 +2,13 @@
 review/scanner.py — Visual BOS+Sweep setup scanner for manual calibration.
 
 Finds every BOS event that matches HTF bias AND has a prior liquidity sweep,
-then shows a candlestick chart for each one so the user can mark which setups
-they would have taken (y/n).  Decisions are saved to a JSON file.
+then opens an interactive candlestick chart in the browser for each one so
+the user can mark which setups they would have taken (y/n).
 
 Usage (via main.py):
     python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --scan
 
-Controls:
+Controls (in terminal after chart opens in browser):
     y  — Yes, I would take this trade
     n  — No, skip
     q  — Quit scanning
@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+import webbrowser
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -30,35 +31,21 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import config
-from strategy.structure  import detect_bos, get_htf_bias
-from strategy.liquidity  import detect_sweeps, liquidity_was_swept
-from strategy.fvg        import detect_fvg, update_mitigation, fvg_near_price
-from strategy.fibonacci  import calculate_fib_levels
+from strategy.structure import detect_bos, get_htf_bias
+from strategy.liquidity import detect_sweeps, liquidity_was_swept
+from strategy.fvg       import detect_fvg, update_mitigation, fvg_near_price
+from strategy.fibonacci import calculate_fib_levels
 
 try:
-    import matplotlib
-    matplotlib.use("TkAgg")   # non-blocking backend; falls back gracefully
-except Exception:
-    pass
-
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    HAS_PLT = True
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
 except ImportError:
-    HAS_PLT = False
-
-try:
-    import mplfinance as mpf
-    HAS_MPF = True
-except ImportError:
-    HAS_MPF = False
+    HAS_PLOTLY = False
 
 
-# ─── Data class for a candidate setup ────────────────────────────────────────
+# ─── Setup candidate ─────────────────────────────────────────────────────────
 
 class SetupCandidate:
-    """A BOS+Sweep candidate that passed conditions 1-3 (but not necessarily 4-5)."""
     __slots__ = (
         "bar_idx", "bar_time", "direction",
         "bos", "sweeps", "fib", "fvgs",
@@ -67,15 +54,15 @@ class SetupCandidate:
 
     def __init__(self, bar_idx, bar_time, direction, bos, sweeps, fib, fvgs,
                  has_fvg_near_entry, all_conditions_met):
-        self.bar_idx              = bar_idx
-        self.bar_time             = bar_time
-        self.direction            = direction
-        self.bos                  = bos
-        self.sweeps               = sweeps
-        self.fib                  = fib
-        self.fvgs                 = fvgs
-        self.has_fvg_near_entry   = has_fvg_near_entry
-        self.all_conditions_met   = all_conditions_met
+        self.bar_idx            = bar_idx
+        self.bar_time           = bar_time
+        self.direction          = direction
+        self.bos                = bos
+        self.sweeps             = sweeps
+        self.fib                = fib
+        self.fvgs               = fvgs
+        self.has_fvg_near_entry = has_fvg_near_entry
+        self.all_conditions_met = all_conditions_met
 
 
 # ─── Scanner ─────────────────────────────────────────────────────────────────
@@ -84,37 +71,24 @@ def scan_setups(
     m15_df: pd.DataFrame,
     h1_df:  pd.DataFrame,
     symbol: str,
-    dedupe_bars: int = 20,
 ) -> list[SetupCandidate]:
     """
     Walk forward through M15 data and collect every BOS+Sweep candidate.
-
-    Conditions checked:
-      1. M15 BOS exists matching HTF bias
-      2. HTF (H1) bias matches BOS direction
-      3. Liquidity was swept before the BOS
-      4. (flagged) Price in 75% Fib entry zone
-      5. (flagged) Active FVG near entry
-
-    Returns list of SetupCandidate objects, one per unique BOS event found.
-    Already-seen BOS events (same bar_idx) are deduplicated so we don't
-    show the same setup 5 times.
+    Conditions 1-3 are required; 4-5 are flagged for display only.
     """
     min_bars = config.SWING_N_LTF * 2 + 10
     total    = len(m15_df) - min_bars
-    t0       = time.time()
 
     candidates: list[SetupCandidate] = []
-    seen_bos_bar_ids: set[int] = set()   # deduplicate on BOS bar_idx
+    seen_bos_bar_ids: set[int] = set()
 
-    # Signal cache (same optimisation as the engine)
-    sig_recompute_at  = min_bars
-    cached_last_bos   = None
-    cached_sweeps     = []
-    cached_fvg_list   = []
-    cached_fvg_end    = 0
-    prev_bos_bar_idx  = -1
-    h1_bias_cache     = "none"
+    sig_recompute_at   = min_bars
+    cached_last_bos    = None
+    cached_sweeps      = []
+    cached_fvg_list    = []
+    cached_fvg_end     = 0
+    prev_bos_bar_idx   = -1
+    h1_bias_cache      = "none"
     h1_bias_recheck_at = 0
 
     print(f"  Scanning {len(m15_df):,} bars for setups…")
@@ -126,10 +100,10 @@ def scan_setups(
         done = i - min_bars
         if done % 200 == 0:
             pct = done / max(total, 1) * 100
-            print(f"\r  {pct:5.1f}%  candidates found: {len(candidates)}   ",
+            print(f"\r  {pct:5.1f}%  candidates: {len(candidates)}   ",
                   end="", flush=True)
 
-        # ── Refresh signals (every SWING_N_LTF bars) ─────────────────────────
+        # Refresh signals every SWING_N_LTF bars
         if i >= sig_recompute_at:
             past     = m15_df.iloc[:i]
             bos_list = detect_bos(past, n=config.SWING_N_LTF)
@@ -147,11 +121,10 @@ def scan_setups(
             cached_sweeps    = sweeps
             sig_recompute_at = i + config.SWING_N_LTF
 
-        # Condition 1: BOS exists
         if cached_last_bos is None:
             continue
 
-        # Condition 2: HTF bias
+        # HTF bias check
         if i >= h1_bias_recheck_at:
             past_h1 = h1_df[h1_df.index < bar_time]
             if len(past_h1) >= config.SWING_N_HTF * 2 + 5:
@@ -163,72 +136,228 @@ def scan_setups(
         if cached_last_bos["direction"] != h1_bias_cache:
             continue
 
-        # Condition 3: Liquidity swept
+        # Liquidity swept
         if not liquidity_was_swept(cached_sweeps, h1_bias_cache,
                                    cached_last_bos["bar_idx"]):
             continue
 
-        # Deduplicate: one candidate per BOS event
+        # Deduplicate per BOS bar
         bos_key = cached_last_bos["bar_idx"]
         if bos_key in seen_bos_bar_ids:
             continue
         seen_bos_bar_ids.add(bos_key)
 
-        # Fibonacci levels
         fib = calculate_fib_levels(
             direction    = cached_last_bos["direction"],
             impulse_low  = cached_last_bos["swing_low"],
             impulse_high = cached_last_bos["swing_high"],
         )
 
-        # FVG incremental mitigation up to this bar
         for j in range(cached_fvg_end, i):
             c = m15_df.iloc[j]
             update_mitigation(cached_fvg_list, c["high"], c["low"])
         cached_fvg_end = i
 
-        # Condition 4+5 flags (for display, not filtering)
-        at_entry_zone  = abs(bar["close"] - fib.entry) <= config.ENTRY_BUFFER * 3
-        fvg_near       = fvg_near_price(cached_fvg_list, fib.entry,
-                                         config.FVG_PROXIMITY, h1_bias_cache)
-        all_met        = at_entry_zone and fvg_near
+        at_entry_zone = abs(bar["close"] - fib.entry) <= config.ENTRY_BUFFER * 3
+        fvg_near      = fvg_near_price(cached_fvg_list, fib.entry,
+                                        config.FVG_PROXIMITY, h1_bias_cache)
 
         candidates.append(SetupCandidate(
-            bar_idx              = i,
-            bar_time             = bar_time,
-            direction            = h1_bias_cache,
-            bos                  = dict(cached_last_bos),
-            sweeps               = list(cached_sweeps),
-            fib                  = fib,
-            fvgs                 = [dict(f) for f in cached_fvg_list],
-            has_fvg_near_entry   = fvg_near,
-            all_conditions_met   = all_met,
+            bar_idx            = i,
+            bar_time           = bar_time,
+            direction          = h1_bias_cache,
+            bos                = dict(cached_last_bos),
+            sweeps             = list(cached_sweeps),
+            fib                = fib,
+            fvgs               = [dict(f) for f in cached_fvg_list],
+            has_fvg_near_entry = fvg_near,
+            all_conditions_met = at_entry_zone and fvg_near,
         ))
 
     print(f"\n  Scan complete — {len(candidates)} unique setups found")
     return candidates
 
 
-# ─── Chart rendering ─────────────────────────────────────────────────────────
+# ─── Plotly HTML chart ───────────────────────────────────────────────────────
 
-def _plot_setup(
+def _build_html(
+    window: pd.DataFrame,
+    candidate: SetupCandidate,
+    index: int,
+    total: int,
+    bos_bar_loc: int,
+    scan_bar_loc: int,
+) -> str:
+    """Build a self-contained HTML string with a Plotly candlestick chart."""
+    fib = candidate.fib
+    bos = candidate.bos
+    direction = candidate.direction
+
+    ts = window.index.astype(str).tolist()
+
+    # ── Candlestick trace ────────────────────────────────────────────────────
+    candle = go.Candlestick(
+        x     = ts,
+        open  = window["open"],
+        high  = window["high"],
+        low   = window["low"],
+        close = window["close"],
+        name  = "Price",
+        increasing_line_color = "#26a69a",
+        decreasing_line_color = "#ef5350",
+    )
+
+    shapes = []
+    annotations = []
+
+    # ── Horizontal level lines (as shapes) ───────────────────────────────────
+    def hline(price, color, dash="dash"):
+        return dict(
+            type="line", xref="x", yref="y",
+            x0=ts[0], x1=ts[-1],
+            y0=price, y1=price,
+            line=dict(color=color, width=1.5, dash=dash),
+        )
+
+    shapes += [
+        hline(fib.tp,    "#00e676", dash="dash"),    # TP — green
+        hline(fib.entry, "#ffd600", dash="dash"),    # Entry — gold
+        hline(fib.sl,    "#f44336", dash="dash"),    # SL — red
+        hline(bos["level"], "#29b6f6", dash="solid"),# BOS — blue
+    ]
+
+    # ── Labels on the right ──────────────────────────────────────────────────
+    def label(price, text, color):
+        return dict(
+            x=ts[-1], y=price, xref="x", yref="y",
+            text=f"<b>{text}</b>", showarrow=False,
+            xanchor="left", font=dict(color=color, size=11),
+        )
+
+    annotations += [
+        label(fib.tp,      f"TP  {fib.tp:.5f}",      "#00e676"),
+        label(fib.entry,   f"Entry {fib.entry:.5f}",  "#ffd600"),
+        label(fib.sl,      f"SL  {fib.sl:.5f}",       "#f44336"),
+        label(bos["level"],f"BOS {bos['level']:.5f}", "#29b6f6"),
+    ]
+
+    # ── FVG zone rectangles ──────────────────────────────────────────────────
+    for fvg in candidate.fvgs:
+        if fvg.get("mitigated") or fvg.get("direction") != direction:
+            continue
+        fvg_start = str(fvg.get("timestamp", ts[0]))
+        shapes.append(dict(
+            type="rect", xref="x", yref="y",
+            x0=fvg_start, x1=ts[-1],
+            y0=fvg["bottom"], y1=fvg["top"],
+            fillcolor="rgba(255,235,59,0.15)",
+            line=dict(width=0),
+        ))
+
+    # ── BOS bar vertical line ─────────────────────────────────────────────────
+    if 0 <= bos_bar_loc < len(ts):
+        shapes.append(dict(
+            type="line", xref="x", yref="paper",
+            x0=ts[bos_bar_loc], x1=ts[bos_bar_loc],
+            y0=0, y1=1,
+            line=dict(color="#29b6f6", width=1, dash="dot"),
+        ))
+        annotations.append(dict(
+            x=ts[bos_bar_loc], y=1, xref="x", yref="paper",
+            text="BOS", showarrow=False, yanchor="top",
+            font=dict(color="#29b6f6", size=10),
+        ))
+
+    # ── "Now" bar vertical line ───────────────────────────────────────────────
+    if 0 <= scan_bar_loc < len(ts):
+        shapes.append(dict(
+            type="line", xref="x", yref="paper",
+            x0=ts[scan_bar_loc], x1=ts[scan_bar_loc],
+            y0=0, y1=1,
+            line=dict(color="#00bcd4", width=1.5, dash="dot"),
+        ))
+        annotations.append(dict(
+            x=ts[scan_bar_loc], y=1, xref="x", yref="paper",
+            text="NOW", showarrow=False, yanchor="top",
+            font=dict(color="#00bcd4", size=10),
+        ))
+
+    # ── Sweep markers ────────────────────────────────────────────────────────
+    sweep_x, sweep_y, sweep_text = [], [], []
+    for sw in candidate.sweeps:
+        if sw.get("direction") == direction:
+            sw_ts = str(sw.get("timestamp", ""))
+            if sw_ts in ts:
+                sw_idx = ts.index(sw_ts)
+                sweep_x.append(sw_ts)
+                sweep_y.append(window.iloc[sw_idx]["low"] * 0.9993)
+                sweep_text.append("SWEEP")
+
+    sweep_trace = go.Scatter(
+        x=sweep_x, y=sweep_y,
+        mode="markers+text",
+        marker=dict(symbol="triangle-up", size=12, color="#e040fb"),
+        text=sweep_text, textposition="bottom center",
+        textfont=dict(color="#e040fb", size=9),
+        name="Sweep",
+        showlegend=False,
+    )
+
+    # ── Build figure ─────────────────────────────────────────────────────────
+    cond_str = "✅ ALL CONDITIONS MET" if candidate.all_conditions_met else \
+               ("🟡 FVG near entry" if candidate.has_fvg_near_entry else "⚪ Conditions 1–3 only")
+
+    rr = (fib.tp_distance / fib.sl_distance) if fib.sl_distance > 0 else 0
+    title = (f"Setup {index}/{total}  |  {direction.upper()}  |  "
+             f"BOS @ {bos['level']:.5f}  |  R:R {rr:.1f}:1  |  {cond_str}")
+
+    fig = go.Figure(data=[candle, sweep_trace])
+    fig.update_layout(
+        title=dict(text=title, font=dict(color="white", size=14)),
+        paper_bgcolor="#131722",
+        plot_bgcolor="#131722",
+        font=dict(color="#d1d4dc"),
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            gridcolor="#1e2130",
+            showgrid=True,
+            type="category",          # avoids weekend gaps
+            tickangle=-45,
+            nticks=20,
+        ),
+        yaxis=dict(gridcolor="#1e2130", showgrid=True),
+        shapes=shapes,
+        annotations=annotations,
+        margin=dict(l=60, r=120, t=60, b=60),
+        height=620,
+        legend=dict(bgcolor="#1e2130"),
+    )
+
+    # Instruction banner at bottom
+    fig.add_annotation(
+        x=0.5, y=-0.12, xref="paper", yref="paper",
+        text="<b>Go back to the Terminal and press  y = take  |  n = skip  |  q = quit</b>",
+        showarrow=False, font=dict(color="#ffd600", size=13),
+        bgcolor="#1e2130", borderpad=6,
+    )
+
+    return fig.to_html(full_html=True, include_plotlyjs="cdn", config={"scrollZoom": True})
+
+
+def _show_chart(
     m15_df: pd.DataFrame,
     candidate: SetupCandidate,
     index: int,
     total: int,
-    context_bars: int = 100,
+    context_bars: int = 120,
 ) -> None:
-    """Render one setup candidate as an annotated candlestick chart."""
-    if not HAS_PLT:
-        print("  [WARNING] matplotlib not installed — cannot show charts")
+    """Render chart to a temp HTML file and open in the default browser."""
+    if not HAS_PLOTLY:
+        print("  [no chart — install plotly: pip3 install plotly]")
         return
 
-    bos  = candidate.bos
-    fib  = candidate.fib
-    i    = candidate.bar_idx
-
-    # Window: show context_bars before the BOS, plus 30 bars after the scan bar
-    bos_bar = bos["bar_idx"]
+    bos_bar = candidate.bos["bar_idx"]
+    i       = candidate.bar_idx
     start   = max(0, bos_bar - context_bars)
     end     = min(len(m15_df), i + 30)
     window  = m15_df.iloc[start:end].copy()
@@ -236,127 +365,16 @@ def _plot_setup(
     if len(window) < 3:
         return
 
-    plt.close("all")
+    html = _build_html(window, candidate, index, total,
+                       bos_bar - start, i - start)
 
-    if HAS_MPF:
-        _plot_mpf(window, candidate, index, total, bos_bar - start, i - start)
-    else:
-        _plot_plain(window, candidate, index, total, bos_bar - start, i - start)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", delete=False, prefix=f"setup_{index}_"
+    ) as f:
+        f.write(html)
+        path = f.name
 
-
-def _plot_mpf(window, candidate, index, total, bos_offset, scan_offset):
-    """mplfinance version."""
-    bos = candidate.bos
-    fib = candidate.fib
-
-    addplots = []
-    n = len(window)
-
-    # ── Fib level horizontal lines ────────────────────────────────────────────
-    for price, color, label in [
-        (fib.entry, "gold",   "Entry 75%"),
-        (fib.sl,    "red",    "SL 100%"),
-        (fib.tp,    "lime",   "TP 0%"),
-    ]:
-        line = pd.Series(price, index=window.index)
-        addplots.append(mpf.make_addplot(line, color=color, linestyle="--",
-                                          width=1.2, alpha=0.85))
-
-    # ── BOS level ─────────────────────────────────────────────────────────────
-    bos_line = pd.Series(bos["level"], index=window.index)
-    addplots.append(mpf.make_addplot(bos_line, color="deepskyblue",
-                                      linestyle="-", width=1.0, alpha=0.7))
-
-    # ── Scan-bar marker (where we are "now") ─────────────────────────────────
-    scan_marker = pd.Series(np.nan, index=window.index)
-    if 0 <= scan_offset < n:
-        scan_marker.iloc[scan_offset] = window.iloc[scan_offset]["low"] * 0.9994
-    addplots.append(mpf.make_addplot(scan_marker, type="scatter",
-                                      markersize=100, marker="^", color="cyan"))
-
-    # ── BOS bar marker ────────────────────────────────────────────────────────
-    bos_marker = pd.Series(np.nan, index=window.index)
-    if 0 <= bos_offset < n:
-        bos_marker.iloc[bos_offset] = window.iloc[bos_offset]["high"] * 1.0006
-    addplots.append(mpf.make_addplot(bos_marker, type="scatter",
-                                      markersize=80, marker="v", color="deepskyblue"))
-
-    cond_str = "ALL CONDITIONS MET" if candidate.all_conditions_met else \
-               ("FVG near entry" if candidate.has_fvg_near_entry else "No FVG near entry")
-    title = (f"[{index}/{total}] {candidate.direction.upper()}  "
-             f"BOS@{bos['level']:.5f}  Entry={fib.entry:.5f}  "
-             f"SL={fib.sl:.5f}  TP={fib.tp:.5f}  | {cond_str}")
-
-    fig, axes = mpf.plot(
-        window,
-        type="candle",
-        style="nightclouds",
-        title=title,
-        addplot=addplots,
-        figsize=(15, 7),
-        warn_too_much_data=99999,
-        returnfig=True,
-    )
-
-    # Shade FVG zones
-    ax = axes[0]
-    for fvg in candidate.fvgs:
-        if fvg.get("mitigated"):
-            continue
-        if fvg.get("direction") != candidate.direction:
-            continue
-        ax.axhspan(fvg["bottom"], fvg["top"],
-                   alpha=0.15, color="yellow", zorder=0)
-
-    plt.tight_layout()
-    plt.pause(0.05)   # draw without blocking
-    plt.show(block=False)
-
-
-def _plot_plain(window, candidate, index, total, bos_offset, scan_offset):
-    """Plain matplotlib fallback."""
-    fig, ax = plt.subplots(figsize=(14, 6))
-    colors = ["#26a69a" if r["close"] >= r["open"] else "#ef5350"
-              for _, r in window.iterrows()]
-
-    for k, (ts, row) in enumerate(window.iterrows()):
-        c = colors[k]
-        ax.plot([k, k], [row["low"], row["high"]], color=c, linewidth=0.8)
-        ax.bar(k, abs(row["close"] - row["open"]),
-               bottom=min(row["open"], row["close"]),
-               color=c, width=0.7, alpha=0.9)
-
-    fib = candidate.fib
-    bos = candidate.bos
-
-    for price, color, label in [
-        (fib.entry, "gold",         "Entry 75%"),
-        (fib.sl,    "red",          "SL 100%"),
-        (fib.tp,    "lime",         "TP 0%"),
-        (bos["level"], "deepskyblue", "BOS level"),
-    ]:
-        ax.axhline(price, color=color, linestyle="--", linewidth=1.2, label=label)
-
-    # Shade FVG zones
-    for fvg in candidate.fvgs:
-        if fvg.get("mitigated") or fvg.get("direction") != candidate.direction:
-            continue
-        ax.axhspan(fvg["bottom"], fvg["top"], alpha=0.15, color="yellow", zorder=0)
-
-    if 0 <= scan_offset < len(window):
-        ax.axvline(scan_offset, color="cyan", linewidth=1.0, linestyle=":", alpha=0.7)
-    if 0 <= bos_offset < len(window):
-        ax.axvline(bos_offset, color="deepskyblue", linewidth=1.0, linestyle=":", alpha=0.7)
-
-    cond_str = "ALL MET" if candidate.all_conditions_met else \
-               ("FVG ok" if candidate.has_fvg_near_entry else "No FVG")
-    ax.set_title(f"[{index}/{total}] {candidate.direction.upper()}  "
-                 f"BOS@{bos['level']:.5f}  Entry={fib.entry:.5f}  "
-                 f"SL={fib.sl:.5f}  TP={fib.tp:.5f}  | {cond_str}")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    plt.pause(0.05)
-    plt.show(block=False)
+    webbrowser.open(f"file://{path}")
 
 
 # ─── Interactive review loop ─────────────────────────────────────────────────
@@ -368,9 +386,8 @@ def run_scan(
     output_path: Optional[str] = None,
 ) -> list[dict]:
     """
-    Scan for setups, show charts, collect y/n answers from the user.
-
-    Returns list of decision dicts saved to output_path (JSON).
+    Scan for setups, show interactive browser charts, collect y/n answers.
+    Decisions are saved to a JSON file.
     """
     if output_path is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -385,10 +402,12 @@ def run_scan(
 
     total = len(candidates)
     print(f"\n  Found {total} candidate setups.")
-    print("  For each chart:  y = take trade  |  n = skip  |  q = quit\n")
 
-    if not HAS_PLT:
-        print("  [WARNING] matplotlib not available — showing text summaries only.")
+    if HAS_PLOTLY:
+        print("  Each setup opens as an interactive chart in your browser.")
+    else:
+        print("  [!] plotly not installed — run: pip3 install plotly")
+    print("  In the terminal:  y = take  |  n = skip  |  q = quit\n")
 
     decisions: list[dict] = []
     taken = 0
@@ -396,38 +415,33 @@ def run_scan(
     for k, cand in enumerate(candidates, 1):
         fib = cand.fib
         bos = cand.bos
+        rr  = fib.tp_distance / fib.sl_distance if fib.sl_distance > 0 else 0
 
-        # Text summary before chart
-        cond_flags = []
-        if cand.has_fvg_near_entry:
-            cond_flags.append("FVG✓")
-        if cand.all_conditions_met:
-            cond_flags.append("ENTRY-ZONE✓")
-        flags_str = "  ".join(cond_flags) if cond_flags else "(conditions 4-5 not fully met)"
+        # Print summary
+        flags = []
+        if cand.has_fvg_near_entry:  flags.append("FVG✓")
+        if cand.all_conditions_met:  flags.append("ENTRY-ZONE✓")
+        flags_str = "  ".join(flags) if flags else "(cond 1-3 only)"
 
-        print(f"  ── Setup {k}/{total} ──────────────────────────────────────")
-        print(f"     Direction : {cand.direction.upper()}")
-        print(f"     BOS bar   : {bos['timestamp']}  level={bos['level']:.5f}")
-        print(f"     Fib Entry : {fib.entry:.5f}  SL={fib.sl:.5f}  TP={fib.tp:.5f}")
-        print(f"     R:R       : {fib.tp_distance/fib.sl_distance:.1f}:1" if fib.sl_distance > 0 else "     R:R       : n/a")
-        print(f"     Conditions: {flags_str}")
+        print(f"  ── Setup {k}/{total} ─────────────────────────────────────────")
+        print(f"     {cand.direction.upper()}  BOS @ {bos['level']:.5f}  "
+              f"({bos['timestamp']})")
+        print(f"     Entry={fib.entry:.5f}  SL={fib.sl:.5f}  "
+              f"TP={fib.tp:.5f}  R:R={rr:.1f}:1")
+        print(f"     {flags_str}")
 
-        if HAS_PLT:
-            _plot_setup(m15_df, cand, k, total)
+        # Open chart in browser
+        _show_chart(m15_df, cand, k, total)
 
-        # Get user input
+        # Get answer
         while True:
             try:
                 ans = input("  Take this trade? [y/n/q]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 ans = "q"
-
             if ans in ("y", "n", "q"):
                 break
             print("  Please press y, n, or q.")
-
-        if HAS_PLT:
-            plt.close("all")
 
         decision = {
             "index":              k,
@@ -439,7 +453,7 @@ def run_scan(
             "fib_entry":          fib.entry,
             "fib_sl":             fib.sl,
             "fib_tp":             fib.tp,
-            "rr":                 round(fib.tp_distance / fib.sl_distance, 2) if fib.sl_distance > 0 else 0,
+            "rr":                 round(rr, 2),
             "has_fvg_near_entry": cand.has_fvg_near_entry,
             "all_conditions_met": cand.all_conditions_met,
             "decision":           ans,
@@ -448,31 +462,27 @@ def run_scan(
 
         if ans == "y":
             taken += 1
-            print(f"  ✓ Marked as TAKEN  (total taken: {taken})")
+            print(f"  ✓ TAKEN  (total taken: {taken})")
         elif ans == "n":
             print(f"  ✗ Skipped")
-        else:  # q
+        else:
             print(f"\n  Quitting scan early (reviewed {k}/{total} setups).")
             break
 
-    # Save decisions
     with open(output_path, "w") as f:
         json.dump(decisions, f, indent=2)
 
-    print(f"\n  ── Scan summary ──────────────────────────────────────────")
+    print(f"\n  ── Scan summary ─────────────────────────────────────────────")
     print(f"  Reviewed : {len(decisions)}")
     print(f"  Taken    : {taken}")
     print(f"  Saved to : {output_path}")
-    print()
 
-    # Show which conditions correlated with "take" decisions
-    if decisions:
-        taken_all    = sum(1 for d in decisions if d["decision"] == "y" and d["all_conditions_met"])
+    if taken > 0 and decisions:
+        taken_all     = sum(1 for d in decisions if d["decision"] == "y" and d["all_conditions_met"])
         taken_partial = sum(1 for d in decisions if d["decision"] == "y" and not d["all_conditions_met"])
-        if taken > 0:
-            print(f"  Of your 'take' decisions:")
-            print(f"    All 5 conditions met : {taken_all}")
-            print(f"    Partial (cond 1-3)   : {taken_partial}")
-            print()
+        print(f"\n  Of your 'take' decisions:")
+        print(f"    All 5 conditions met : {taken_all}")
+        print(f"    Partial (cond 1-3)   : {taken_partial}")
+    print()
 
     return decisions
