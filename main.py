@@ -24,12 +24,16 @@ Usage:
     # ביקורת ויזואלית של עסקאות:
     python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --review
 
+    # סריקה ויזואלית ידנית (בחירת עסקאות):
+    python main.py --symbol EURUSD --from 2024-01-01 --to 2024-06-01 --scan
+
 Options:
     --symbol   : סמל/ים (e.g. EURUSD XAUUSD NAS100)
     --from     : תאריך התחלה YYYY-MM-DD
     --to       : תאריך סיום YYYY-MM-DD
     --source   : auto | mt5 | yfinance | bridge  (default: auto)
     --review   : הצגת גרפי נרות לכל עסקה
+    --scan     : סריקה ויזואלית ידנית — בחר y/n לכל סטאפ
     --csv-m15  : נתיב CSV לנתוני 15M
     --csv-h1   : נתיב CSV לנתוני 1H
     --risk     : סיכון USD לעסקה (default: 500)
@@ -59,6 +63,8 @@ def parse_args():
                    help="Data source (default: auto-detect)")
     p.add_argument("--review", action="store_true",
                    help="Show candlestick chart review after backtest")
+    p.add_argument("--scan", action="store_true",
+                   help="Visual setup scanner — manually mark y/n for each BOS+Sweep setup")
     p.add_argument("--csv-m15", dest="csv_m15", default=None,
                    help="Path to CSV file for 15M OHLCV data")
     p.add_argument("--csv-h1",  dest="csv_h1",  default=None,
@@ -98,6 +104,12 @@ def main():
             h1_df = get_ohlcv(symbol, "H1", args.date_from, args.date_to, source=args.source)
 
         print(f"  15M bars: {len(m15_df):,}  |  1H bars: {len(h1_df):,}")
+
+        # ── Scan mode: visual setup browser ──────────────────────────────────
+        if args.scan:
+            from review.scanner import run_scan
+            run_scan(m15_df, h1_df, symbol)
+            continue   # skip automated backtest when in scan mode
 
         # Run backtest
         print(f"  Running backtest...")
