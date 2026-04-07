@@ -34,9 +34,26 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 # ── Path setup ───────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
+
+
+class _Encoder(json.JSONEncoder):
+    """Convert pandas/numpy types that json can't handle."""
+    def default(self, obj):
+        if isinstance(obj, pd.Timestamp):
+            return str(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
 
 import config
 from data.fetcher import get_ohlcv, _detect_source
@@ -536,7 +553,7 @@ def _save_decisions():
         })
 
     with open(STATE["output_path"], "w") as f:
-        json.dump(records, f, indent=2)
+        json.dump(records, f, indent=2, cls=_Encoder)
 
 
 # ─── Cache helpers ────────────────────────────────────────────────────────────
@@ -554,7 +571,7 @@ def _cache_path(key: str) -> Path:
 
 def _save_cache(key, data):
     with open(_cache_path(key), "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, cls=_Encoder)
 
 
 def _load_cache(key):
