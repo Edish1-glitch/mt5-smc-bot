@@ -577,8 +577,11 @@ def _save_cache(key, data):
 def _load_cache(key):
     p = _cache_path(key)
     if p.exists():
-        with open(p) as f:
-            return json.load(f)
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception):
+            p.unlink(missing_ok=True)   # delete corrupt cache
     return None
 
 
