@@ -57,6 +57,14 @@ class _Encoder(json.JSONEncoder):
 
 import config
 from data.fetcher import get_ohlcv, _detect_source
+
+
+def _load_duka_csv(path, date_from: str, date_to: str) -> pd.DataFrame:
+    """Load a Dukascopy CSV produced by download_data.py, filtered to date range."""
+    df = pd.read_csv(path, parse_dates=["time"], index_col="time")
+    df.index = pd.to_datetime(df.index, utc=True)
+    df = df.sort_index()
+    return df[date_from:date_to]
 from review.scanner import scan_setups, SetupCandidate
 
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
@@ -593,7 +601,7 @@ def main():
     p.add_argument("--from",     dest="date_from", required=True)
     p.add_argument("--to",       dest="date_to",   required=True)
     p.add_argument("--source",   default="auto",
-                   choices=["auto","mt5","oanda","yfinance","bridge"])
+                   choices=["auto","mt5","oanda","yfinance","bridge","dukascopy"])
     p.add_argument("--max",      type=int, default=25,
                    help="Max setups to review (default: 25, best-scored first)")
     p.add_argument("--port",     type=int, default=5001)
@@ -608,8 +616,26 @@ def main():
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print("  Loading market data…")
-    m15_df = get_ohlcv(symbol, "M15", args.date_from, args.date_to, source=args.source)
-    h1_df  = get_ohlcv(symbol, "H1",  args.date_from, args.date_to, source=args.source)
+
+    if source == "dukascopy":
+        # Auto-load from downloaded CSVs (run download_data.py first)
+        cache_dir = ROOT / "data" / "cache"
+        m15_csv = cache_dir / f"{symbol}_M15_dukascopy.csv"
+        h1_csv  = cache_dir / f"{symbol}_H1_dukascopy.csv"
+
+        if not m15_csv.exists() or not h1_csv.exists():
+            missing = [str(f) for f in [m15_csv, h1_csv] if not f.exists()]
+            print(f"\n  ERROR: Dukascopy CSV not found: {missing}")
+            print(f"  Run first:\n  python3 download_data.py --symbol {symbol} "
+                  f"--from {args.date_from} --to {args.date_to}\n")
+            return
+
+        m15_df = _load_duka_csv(m15_csv, args.date_from, args.date_to)
+        h1_df  = _load_duka_csv(h1_csv,  args.date_from, args.date_to)
+    else:
+        m15_df = get_ohlcv(symbol, "M15", args.date_from, args.date_to, source=args.source)
+        h1_df  = get_ohlcv(symbol, "H1",  args.date_from, args.date_to, source=args.source)
+
     print(f"  15M bars: {len(m15_df):,}  |  1H bars: {len(h1_df):,}")
 
     # ── Scan (with cache) ─────────────────────────────────────────────────────

@@ -108,10 +108,11 @@ def get_ohlcv(
         return pd.read_parquet(cache_path)
 
     fetchers = {
-        "mt5":      _fetch_from_mt5,
-        "oanda":    _fetch_from_oanda,
-        "yfinance": _fetch_from_yfinance,
-        "bridge":   _fetch_from_bridge,
+        "mt5":        _fetch_from_mt5,
+        "oanda":      _fetch_from_oanda,
+        "yfinance":   _fetch_from_yfinance,
+        "bridge":     _fetch_from_bridge,
+        "dukascopy":  _fetch_from_dukascopy,
     }
     if source not in fetchers:
         raise ValueError(f"Unknown source {source!r}. Options: {list(fetchers)}")
@@ -318,6 +319,137 @@ def _fetch_from_yfinance(symbol, timeframe, date_from, date_to):
     df.index = pd.to_datetime(df.index, utc=True)
     df.index.name = "time"
     return df.sort_index()
+
+
+# ── Dukascopy (free, no API key, bank-quality forex history) ─────────────────
+
+# Price scale: Dukascopy stores prices as integer × point_mult
+_DUKA_POINT = {
+    "EURUSD": 100_000, "GBPUSD": 100_000, "AUDUSD": 100_000,
+    "NZDUSD": 100_000, "USDCAD": 100_000, "USDCHF": 100_000,
+    "EURGBP": 100_000, "EURJPY": 1_000,   "GBPJPY": 1_000,
+    "USDJPY": 1_000,
+    "XAUUSD": 1_000,   "XAGUSD": 1_000,
+    "NAS100": 10,      "US500":  10,       "US30": 1,
+}
+
+# Resample 1-min candles → target timeframe
+_DUKA_RESAMPLE = {
+    "M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min",
+    "H1": "1h",   "H4": "4h",   "D1":  "1D",
+}
+
+
+def _fetch_from_dukascopy(symbol, timeframe, date_from, date_to):
+    """
+    Download free OHLCV data from Dukascopy's public data feed.
+
+    No API key required. Data is bank-quality, goes back 10+ years.
+    Downloads 1-minute BID candles (bi5 format) then resamples.
+
+    Supported: all major forex pairs + XAUUSD + indices.
+    """
+    import lzma
+    import struct
+    import requests
+
+    resample_rule = _DUKA_RESAMPLE.get(timeframe)
+    if not resample_rule:
+        raise ValueError(f"Unsupported timeframe for Dukascopy: {timeframe}")
+
+    mult = _DUKA_POINT.get(symbol.upper(), 100_000)
+
+    dt_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+    dt_to   = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
+
+    frames = []
+    current = dt_from.replace(hour=0, minute=0, second=0, microsecond=0)
+    total_days = (dt_to - dt_from).days
+    done = 0
+
+    while current < dt_to:
+        # Dukascopy months are 0-indexed (Jan=00)
+        url = (
+            f"https://datafeed.dukascopy.com/datafeed/{symbol.upper()}/"
+            f"{current.year}/{current.month - 1:02d}/{current.day:02d}"
+            f"/BID_candles_min_1.bi5"
+        )
+
+        pct = done / max(total_days, 1) * 100
+        print(f"\r  [Dukascopy] {pct:4.0f}%  {current.date()}  bars: {sum(len(f) for f in frames):,}   ",
+              end="", flush=True)
+
+        _HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"}
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=15)
+        except Exception:
+            current += timedelta(days=1)
+            done += 1
+            continue
+
+        if resp.status_code == 200 and resp.content:
+            try:
+                raw = lzma.decompress(resp.content)
+            except Exception:
+                current += timedelta(days=1)
+                done += 1
+                continue
+
+            # Each record: 24 bytes = uint32 ts_ms, uint32 open, uint32 high,
+            #              uint32 low, uint32 close, float32 volume
+            fmt    = ">IIIIIf"
+            sz     = struct.calcsize(fmt)   # = 24
+            midnight = current
+            recs = []
+            for i in range(0, len(raw) - sz + 1, sz):
+                ts_ms, op, hi, lo, cl, vol = struct.unpack_from(fmt, raw, i)
+                ts = midnight + timedelta(milliseconds=int(ts_ms))
+                recs.append((ts, op / mult, hi / mult, lo / mult, cl / mult, vol))
+
+            if recs:
+                df_day = pd.DataFrame(
+                    recs, columns=["time", "open", "high", "low", "close", "volume"]
+                )
+                df_day["time"] = pd.DatetimeIndex(
+                    pd.to_datetime(df_day["time"], utc=True)
+                )
+                df_day = df_day.set_index("time")
+                frames.append(df_day)
+
+        current += timedelta(days=1)
+        done += 1
+
+    print()  # newline after progress bar
+
+    if not frames:
+        raise RuntimeError(
+            f"Dukascopy: no data returned for {symbol} "
+            f"({date_from} → {date_to}). "
+            f"Check symbol name — supported: EURUSD GBPUSD USDJPY XAUUSD etc."
+        )
+
+    # Combine all 1-min bars
+    m1 = pd.concat(frames).sort_index()
+    m1 = m1[~m1.index.duplicated(keep="first")]
+
+    # Resample to target timeframe
+    if timeframe == "M1":
+        return m1
+
+    agg = {
+        "open":   "first",
+        "high":   "max",
+        "low":    "min",
+        "close":  "last",
+        "volume": "sum",
+    }
+    df = m1.resample(resample_rule, label="left", closed="left").agg(agg)
+    df = df.dropna(subset=["open"])
+
+    # Filter to requested date range
+    return df[date_from:date_to]
 
 
 # ── MT5 Bridge ────────────────────────────────────────────────────────────────
