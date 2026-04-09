@@ -146,19 +146,18 @@ def _serialise(cand: SetupCandidate, rank: int) -> dict:
     }
 
 
-# ─── Plotly chart JSON ───────────────────────────────────────────────────────
+# ─── Chart data for TradingView Lightweight Charts ───────────────────────────
 
-def _build_chart_json(
+def _build_chart_data(
     m15_df,
     setup: dict,
     candidates_raw: list[SetupCandidate],
     context_bars: int = 120,
-) -> str:
-    """Build Plotly figure JSON for a single setup."""
-    # Find the raw candidate matching this setup
+) -> dict:
+    """Build chart data dict for TradingView Lightweight Charts JS library."""
     cand = next((c for c in candidates_raw if c.bar_idx == setup["bar_idx"]), None)
     if cand is None:
-        return "{}"
+        return {}
 
     bos_bar = cand.bos["bar_idx"]
     i       = cand.bar_idx
@@ -167,231 +166,194 @@ def _build_chart_json(
     window  = m15_df.iloc[start:end].copy()
 
     if len(window) < 3:
-        return "{}"
+        return {}
 
-    ts = window.index.astype(str).tolist()
     fib = cand.fib
     bos = cand.bos
 
-    candle = go.Candlestick(
-        x=ts,
-        open=window["open"], high=window["high"],
-        low=window["low"],   close=window["close"],
-        name="Price",
-        increasing_line_color="#26a69a",
-        decreasing_line_color="#ef5350",
-        increasing_fillcolor="#26a69a",
-        decreasing_fillcolor="#ef5350",
-    )
+    # Candles — lightweight-charts uses Unix seconds
+    candles = []
+    for ts, row in window.iterrows():
+        candles.append({
+            "time":  int(ts.timestamp()),
+            "open":  round(float(row["open"]),  5),
+            "high":  round(float(row["high"]),  5),
+            "low":   round(float(row["low"]),   5),
+            "close": round(float(row["close"]), 5),
+        })
 
-    shapes      = []
-    annotations = []
+    # Markers (BOS bar, NOW bar, sweeps)
+    markers = []
+    ts_map  = {c["time"]: idx for idx, c in enumerate(candles)}
 
-    def hline(price, color, dash="dash", width=1.5):
-        shapes.append(dict(
-            type="line", xref="x", yref="y",
-            x0=ts[0], x1=ts[-1],
-            y0=price, y1=price,
-            line=dict(color=color, width=width, dash=dash),
-        ))
+    bos_offset  = bos_bar - start
+    scan_offset = i - start
 
-    def label_right(price, text, color):
-        annotations.append(dict(
-            x=ts[-1], y=price, xref="x", yref="y",
-            text=f"<b>{text}</b>", showarrow=False,
-            xanchor="left", font=dict(color=color, size=11),
-        ))
+    if 0 <= bos_offset < len(candles):
+        markers.append({
+            "time":     candles[bos_offset]["time"],
+            "position": "aboveBar",
+            "color":    "#29b6f6",
+            "shape":    "arrowDown",
+            "text":     "BOS",
+        })
 
-    hline(fib.tp,      "#00e676")
-    hline(fib.entry,   "#ffd600")
-    hline(fib.sl,      "#f44336")
-    hline(bos["level"], "#29b6f6", dash="solid", width=1.2)
+    if 0 <= scan_offset < len(candles):
+        markers.append({
+            "time":     candles[scan_offset]["time"],
+            "position": "aboveBar",
+            "color":    "#00bcd4",
+            "shape":    "circle",
+            "text":     "NOW",
+        })
 
-    label_right(fib.tp,       f"TP  {fib.tp:.5f}",       "#00e676")
-    label_right(fib.entry,    f"Entry {fib.entry:.5f}",   "#ffd600")
-    label_right(fib.sl,       f"SL  {fib.sl:.5f}",        "#f44336")
-    label_right(bos["level"], f"BOS {bos['level']:.5f}",  "#29b6f6")
+    for sw in cand.sweeps:
+        if sw.get("direction") == cand.direction:
+            sw_ts = sw.get("timestamp")
+            if sw_ts:
+                try:
+                    sw_unix = int(pd.Timestamp(sw_ts).timestamp())
+                    if sw_unix in ts_map:
+                        markers.append({
+                            "time":     sw_unix,
+                            "position": "belowBar",
+                            "color":    "#e040fb",
+                            "shape":    "arrowUp",
+                            "text":     "SWEEP",
+                        })
+                except Exception:
+                    pass
 
     # FVG zones
+    fvgs = []
     for fvg in cand.fvgs:
         if fvg.get("mitigated") or fvg.get("direction") != cand.direction:
             continue
-        fvg_ts = str(fvg.get("timestamp", ts[0]))
-        x0 = fvg_ts if fvg_ts in ts else ts[0]
-        shapes.append(dict(
-            type="rect", xref="x", yref="y",
-            x0=x0, x1=ts[-1],
-            y0=fvg["bottom"], y1=fvg["top"],
-            fillcolor="rgba(255,235,59,0.12)",
-            line=dict(width=0),
-        ))
+        fvgs.append({"top": round(float(fvg["top"]), 5),
+                     "bottom": round(float(fvg["bottom"]), 5)})
 
-    # BOS bar vertical
-    bos_offset = bos_bar - start
-    if 0 <= bos_offset < len(ts):
-        shapes.append(dict(
-            type="line", xref="x", yref="paper",
-            x0=ts[bos_offset], x1=ts[bos_offset],
-            y0=0, y1=1,
-            line=dict(color="#29b6f6", width=1, dash="dot"),
-        ))
-        annotations.append(dict(
-            x=ts[bos_offset], y=0.99, xref="x", yref="paper",
-            text="BOS", showarrow=False, yanchor="top",
-            font=dict(color="#29b6f6", size=10),
-        ))
-
-    # NOW bar vertical
-    scan_offset = i - start
-    if 0 <= scan_offset < len(ts):
-        shapes.append(dict(
-            type="line", xref="x", yref="paper",
-            x0=ts[scan_offset], x1=ts[scan_offset],
-            y0=0, y1=1,
-            line=dict(color="#00bcd4", width=1.5, dash="dot"),
-        ))
-        annotations.append(dict(
-            x=ts[scan_offset], y=0.99, xref="x", yref="paper",
-            text="NOW", showarrow=False, yanchor="top",
-            font=dict(color="#00bcd4", size=10),
-        ))
-
-    # Sweep markers
-    sweep_x, sweep_y = [], []
-    for sw in cand.sweeps:
-        if sw.get("direction") == cand.direction:
-            sw_ts = str(sw.get("timestamp", ""))
-            if sw_ts in ts:
-                idx2 = ts.index(sw_ts)
-                sweep_x.append(sw_ts)
-                sweep_y.append(window.iloc[idx2]["low"] * 0.9993)
-
-    sweep_trace = go.Scatter(
-        x=sweep_x, y=sweep_y,
-        mode="markers",
-        marker=dict(symbol="triangle-up", size=14, color="#e040fb"),
-        name="Sweep", showlegend=False,
-    )
-
-    fig = go.Figure(data=[candle, sweep_trace])
-    fig.update_layout(
-        paper_bgcolor="#131722",
-        plot_bgcolor="#131722",
-        font=dict(color="#d1d4dc"),
-        xaxis=dict(
-            rangeslider=dict(visible=False),
-            gridcolor="#1e2130",
-            type="category",
-            tickangle=-45,
-            nticks=20,
-        ),
-        yaxis=dict(gridcolor="#1e2130"),
-        shapes=shapes,
-        annotations=annotations,
-        margin=dict(l=60, r=130, t=20, b=60),
-        height=520,
-        showlegend=False,
-    )
-
-    return fig.to_json()
+    return {
+        "candles":   candles,
+        "markers":   sorted(markers, key=lambda m: m["time"]),
+        "fvgs":      fvgs,
+        "fib": {
+            "sl":    round(float(fib.sl),    5),
+            "entry": round(float(fib.entry), 5),
+            "tp":    round(float(fib.tp),    5),
+            "impulse_high": round(float(fib.impulse_high), 5),
+            "impulse_low":  round(float(fib.impulse_low),  5),
+        },
+        "bos_level": round(float(bos["level"]), 5),
+        "direction": cand.direction,
+    }
 
 
-# ─── HTML template ────────────────────────────────────────────────────────────
+# ─── HTML template (TradingView Lightweight Charts) ───────────────────────────
 
 _HTML = """
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="he">
 <head>
 <meta charset="utf-8">
 <title>SMC Scanner — {{ setup.symbol }} #{{ setup.rank }}/{{ total }}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; color: #e6edf3; font-family: 'SF Pro', Arial, sans-serif;
+  body { background: #131722; color: #d1d4dc;
+         font-family: -apple-system, 'Trebuchet MS', Arial, sans-serif;
          display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
   /* ─ Top bar ─ */
   #topbar {
-    background: #161b22; border-bottom: 1px solid #30363d;
-    padding: 10px 20px; display: flex; align-items: center;
-    gap: 20px; flex-shrink: 0;
+    background: #1e222d; border-bottom: 1px solid #2a2e39;
+    padding: 8px 16px; display: flex; align-items: center;
+    gap: 16px; flex-shrink: 0; height: 44px;
   }
-  #topbar .progress { font-size: 22px; font-weight: 700; color: #f0f6fc; }
-  #topbar .meta    { font-size: 13px; color: #8b949e; }
-  #topbar .badges  { display: flex; gap: 8px; margin-left: auto; }
-  .badge { padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-  .badge-bull { background: #1a4731; color: #3fb950; }
-  .badge-bear { background: #4d1d1d; color: #f85149; }
-  .badge-fvg  { background: #2d2500; color: #ffd600; }
-  .badge-all  { background: #0d3349; color: #29b6f6; }
-  .badge-rr   { background: #1e1e2e; color: #c9d1d9; }
+  #topbar .progress { font-size: 20px; font-weight: 700; color: #fff; min-width: 80px; }
+  #topbar .sym      { font-size: 14px; font-weight: 600; color: #d1d4dc; }
+  #topbar .ts       { font-size: 12px; color: #787b86; }
+  #topbar .badges   { display: flex; gap: 6px; margin-left: auto; }
+  .badge { padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; }
+  .badge-bull { background: #1a4731; color: #4caf50; border: 1px solid #2e7d32; }
+  .badge-bear { background: #4d1d1d; color: #f44336; border: 1px solid #c62828; }
+  .badge-fvg  { background: #332900; color: #ffd600; border: 1px solid #f57f17; }
+  .badge-all  { background: #0a2744; color: '#29b6f6'; border: 1px solid #0277bd; }
+  .badge-rr   { background: #1e222d; color: #d1d4dc; border: 1px solid #2a2e39; }
 
-  /* ─ Chart ─ */
-  #chart-wrap { flex: 1; min-height: 0; }
+  /* ─ Chart area ─ */
+  #chart-wrap { flex: 1; min-height: 0; position: relative; }
   #chart      { width: 100%; height: 100%; }
 
   /* ─ Bottom bar ─ */
   #bottombar {
-    background: #161b22; border-top: 1px solid #30363d;
-    padding: 12px 20px; display: flex; align-items: center;
-    gap: 16px; flex-shrink: 0;
+    background: #1e222d; border-top: 1px solid #2a2e39;
+    padding: 10px 16px; display: flex; align-items: center;
+    gap: 12px; flex-shrink: 0; height: 60px;
   }
-  .info-block { font-size: 12px; color: #8b949e; line-height: 1.6; }
-  .info-block span { color: #e6edf3; font-weight: 600; }
+  .levels {
+    display: flex; gap: 16px; font-size: 12px;
+  }
+  .level-item { display: flex; gap: 5px; align-items: center; }
+  .level-dot  { width: 8px; height: 8px; border-radius: 50%; }
+  .level-label{ color: #787b86; }
+  .level-val  { font-weight: 700; font-variant-numeric: tabular-nums; }
 
   .btn {
-    padding: 10px 36px; border: none; border-radius: 8px; font-size: 16px;
-    font-weight: 700; cursor: pointer; transition: filter 0.15s; outline: none;
+    padding: 9px 28px; border: none; border-radius: 6px;
+    font-size: 15px; font-weight: 700; cursor: pointer;
+    transition: opacity 0.15s; outline: none;
   }
-  .btn:hover { filter: brightness(1.2); }
-  .btn:active { filter: brightness(0.85); transform: scale(0.97); }
-  #btn-yes { background: #238636; color: #fff; }
-  #btn-no  { background: #30363d; color: #e6edf3; }
-  #btn-quit{ background: #21262d; color: #8b949e; margin-left: auto; font-size: 13px; padding: 8px 20px; }
+  .btn:hover  { opacity: 0.85; }
+  .btn:active { opacity: 0.7; transform: scale(0.97); }
+  #btn-yes { background: #2e7d32; color: #fff; }
+  #btn-no  { background: #2a2e39; color: #d1d4dc; }
+  #btn-quit{ background: transparent; color: #787b86; font-size: 12px;
+             padding: 6px 14px; border: 1px solid #2a2e39; border-radius: 4px;
+             margin-left: auto; }
+  .shortcut { font-size: 10px; color: #4a4e5a; text-align: center; margin-top: 2px; }
 
-  .shortcut { font-size: 11px; color: #6e7681; margin-top: 2px; }
-
-  /* ─ Loading overlay ─ */
+  /* ─ Overlay (loading) ─ */
   #overlay {
     display: none; position: fixed; inset: 0;
-    background: rgba(13,17,23,0.85); z-index: 100;
-    align-items: center; justify-content: center; font-size: 20px; color: #e6edf3;
+    background: rgba(19,23,34,0.85); z-index: 100;
+    align-items: center; justify-content: center;
+    font-size: 18px; color: #d1d4dc;
   }
   #overlay.show { display: flex; }
 
   /* ─ Done screen ─ */
   #done-screen {
     display: none; position: fixed; inset: 0;
-    background: #0d1117; z-index: 200;
-    align-items: center; justify-content: center; flex-direction: column; gap: 16px;
+    background: #131722; z-index: 200;
+    align-items: center; justify-content: center;
+    flex-direction: column; gap: 14px;
   }
   #done-screen.show { display: flex; }
-  #done-screen h1  { font-size: 28px; color: #3fb950; }
-  #done-screen .summary { font-size: 16px; color: #8b949e; text-align: center; line-height: 2; }
+  #done-screen h1  { font-size: 26px; color: #4caf50; }
+  #done-screen .summary { font-size: 15px; color: #787b86;
+                          text-align: center; line-height: 2; }
 </style>
 </head>
 <body>
 
-<!-- Loading overlay -->
 <div id="overlay"><span>טוען…</span></div>
-
-<!-- Done screen -->
 <div id="done-screen">
   <h1>✅ הסקאן הסתיים!</h1>
   <div class="summary" id="done-summary"></div>
-  <p style="color:#6e7681;font-size:13px">הנתונים נשמרו אוטומטית. אפשר לסגור את הדפדפן.</p>
+  <p style="color:#4a4e5a;font-size:12px">הנתונים נשמרו. אפשר לסגור.</p>
 </div>
 
 <!-- Top bar -->
 <div id="topbar">
-  <div class="progress">#{{ setup.rank }} / {{ total }}</div>
-  <div class="meta">{{ symbol }}  |  {{ setup.bos_timestamp[:16] }}</div>
+  <div class="progress">{{ setup.rank }} / {{ total }}</div>
+  <div class="sym">{{ symbol }}</div>
+  <div class="ts">{{ setup.bos_timestamp[:16] }}</div>
   <div class="badges">
     <span class="badge {{ 'badge-bull' if setup.direction == 'bull' else 'badge-bear' }}">
-      {{ '▲ BULL' if setup.direction == 'bull' else '▼ BEAR' }}
+      {{ '▲ LONG' if setup.direction == 'bull' else '▼ SHORT' }}
     </span>
-    {% if setup.has_fvg %}<span class="badge badge-fvg">FVG ✓</span>{% endif %}
-    {% if setup.all_conditions_met %}<span class="badge badge-all">כל התנאים ✓</span>{% endif %}
+    {% if setup.has_fvg %}<span class="badge badge-fvg">FVG</span>{% endif %}
+    {% if setup.all_conditions_met %}<span class="badge badge-all" style="color:#29b6f6;">✓ כל התנאים</span>{% endif %}
     <span class="badge badge-rr">R:R {{ setup.rr }}:1</span>
   </div>
 </div>
@@ -401,40 +363,192 @@ _HTML = """
 
 <!-- Bottom bar -->
 <div id="bottombar">
-  <div class="info-block">
-    Entry <span>{{ setup.fib_entry }}</span><br>
-    SL &nbsp;&nbsp;&nbsp;<span>{{ setup.fib_sl }}</span><br>
-    TP &nbsp;&nbsp;&nbsp;<span>{{ setup.fib_tp }}</span>
+  <div class="levels">
+    <div class="level-item">
+      <div class="level-dot" style="background:#f44336"></div>
+      <span class="level-label">SL</span>
+      <span class="level-val" style="color:#f44336">{{ setup.fib_sl }}</span>
+    </div>
+    <div class="level-item">
+      <div class="level-dot" style="background:#ffd600"></div>
+      <span class="level-label">Entry</span>
+      <span class="level-val" style="color:#ffd600">{{ setup.fib_entry }}</span>
+    </div>
+    <div class="level-item">
+      <div class="level-dot" style="background:#4caf50"></div>
+      <span class="level-label">TP</span>
+      <span class="level-val" style="color:#4caf50">{{ setup.fib_tp }}</span>
+    </div>
   </div>
-  <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+
+  <div style="display:flex;flex-direction:column;align-items:center;margin-left:12px">
     <button id="btn-yes" class="btn" onclick="decide('y')">✅ YES — לוקח</button>
-    <div class="shortcut">מקשור: Y</div>
+    <div class="shortcut">Y</div>
   </div>
-  <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+  <div style="display:flex;flex-direction:column;align-items:center">
     <button id="btn-no"  class="btn" onclick="decide('n')">❌ NO — מדלג</button>
-    <div class="shortcut">מקשור: N</div>
+    <div class="shortcut">N</div>
   </div>
   <button id="btn-quit" class="btn" onclick="decide('q')">יציאה</button>
 </div>
 
 <script>
-const CHART_JSON = {{ chart_json | safe }};
+const SETUP      = {{ setup_json | safe }};
+const CHART_DATA = {{ chart_data | safe }};
 const SETUP_IDX  = {{ setup.rank }};
 const TOTAL      = {{ total }};
+const LW         = LightweightCharts;
 
-// Render chart
-Plotly.newPlot('chart', CHART_JSON.data, CHART_JSON.layout, {
-  responsive: true, scrollZoom: true, displaylogo: false,
-  modeBarButtonsToRemove: ['toImage','sendDataToCloud'],
+// ── Create chart ──────────────────────────────────────────────────────────────
+const wrap = document.getElementById('chart-wrap');
+const chart = LW.createChart(wrap, {
+  width:  wrap.clientWidth,
+  height: wrap.clientHeight,
+  layout: {
+    background: { type: LW.ColorType.Solid, color: '#131722' },
+    textColor: '#d1d4dc',
+    fontSize: 12,
+  },
+  grid: {
+    vertLines: { color: '#1e222d' },
+    horzLines: { color: '#1e222d' },
+  },
+  crosshair: { mode: LW.CrosshairMode.Normal },
+  rightPriceScale: {
+    borderColor: '#2a2e39',
+    scaleMargins: { top: 0.08, bottom: 0.08 },
+  },
+  timeScale: {
+    borderColor: '#2a2e39',
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: true,
+    fixRightEdge: true,
+  },
+  handleScroll: true,
+  handleScale:  true,
 });
 
-// Keyboard shortcuts
+// ── Candlestick series ────────────────────────────────────────────────────────
+const series = chart.addCandlestickSeries({
+  upColor:        '#26a69a',
+  downColor:      '#ef5350',
+  borderUpColor:  '#26a69a',
+  borderDownColor:'#ef5350',
+  wickUpColor:    '#26a69a',
+  wickDownColor:  '#ef5350',
+});
+series.setData(CHART_DATA.candles);
+
+// ── Price lines (labels always visible on the right) ─────────────────────────
+const fib = CHART_DATA.fib;
+
+series.createPriceLine({
+  price: fib.sl,    color: '#f44336', lineWidth: 1,
+  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'SL 100%',
+});
+series.createPriceLine({
+  price: fib.entry, color: '#ffd600', lineWidth: 1,
+  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry 75%',
+});
+series.createPriceLine({
+  price: fib.tp,    color: '#4caf50', lineWidth: 1,
+  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'TP 0%',
+});
+series.createPriceLine({
+  price: CHART_DATA.bos_level, color: '#29b6f6', lineWidth: 1,
+  lineStyle: LW.LineStyle.Solid, axisLabelVisible: true, title: 'BOS',
+});
+
+// ── Markers ───────────────────────────────────────────────────────────────────
+if (CHART_DATA.markers && CHART_DATA.markers.length)
+  series.setMarkers(CHART_DATA.markers);
+
+// ── Canvas overlay: Fib zone + FVG rectangles ─────────────────────────────────
+function drawOverlays() {
+  // Remove old overlay if any
+  const old = wrap.querySelector('canvas.overlay');
+  if (old) old.remove();
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'overlay';
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+  wrap.appendChild(canvas);
+
+  const ctx = canvas.getContext('2d');
+
+  // Fibonacci retracement zone (full impulse move)
+  const dir    = CHART_DATA.direction;
+  const fibTop = dir === 'bear' ? fib.sl : fib.tp;
+  const fibBot = dir === 'bear' ? fib.tp : fib.sl;
+  const yTop   = series.priceToCoordinate(fibTop);
+  const yBot   = series.priceToCoordinate(fibBot);
+
+  if (yTop !== null && yBot !== null && yBot > yTop) {
+    const h = yBot - yTop;
+    // Gradient fill: tight at entry level, fading outwards
+    const grad = ctx.createLinearGradient(0, yTop, 0, yBot);
+    grad.addColorStop(0, 'rgba(41,182,246,0.03)');
+    grad.addColorStop(0.5,'rgba(41,182,246,0.09)');
+    grad.addColorStop(1, 'rgba(41,182,246,0.03)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, yTop, canvas.width, h);
+
+    // Left edge label: "Fib zone"
+    ctx.font = 'bold 10px Arial';
+    ctx.fillStyle = 'rgba(41,182,246,0.55)';
+    ctx.fillText('Fib zone', 6, yTop + 13);
+
+    // Top & bottom anchor lines (thin)
+    ctx.strokeStyle = 'rgba(41,182,246,0.25)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(0, yTop); ctx.lineTo(canvas.width, yTop); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, yBot); ctx.lineTo(canvas.width, yBot); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // FVG zones (yellow)
+  for (const fvg of (CHART_DATA.fvgs || [])) {
+    const yF1 = series.priceToCoordinate(fvg.top);
+    const yF2 = series.priceToCoordinate(fvg.bottom);
+    if (yF1 !== null && yF2 !== null && yF2 > yF1) {
+      ctx.fillStyle = 'rgba(255,235,59,0.10)';
+      ctx.strokeStyle = 'rgba(255,235,59,0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.fillRect(0, yF1, canvas.width, yF2 - yF1);
+      ctx.strokeRect(0, yF1, canvas.width, yF2 - yF1);
+      ctx.font = '9px Arial';
+      ctx.fillStyle = 'rgba(255,235,59,0.55)';
+      ctx.fillText('FVG', 6, yF1 + 11);
+    }
+  }
+}
+
+// Draw after chart has settled
+setTimeout(drawOverlays, 250);
+
+// Redraw overlays on scroll/zoom
+chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+  setTimeout(drawOverlays, 50);
+});
+
+// Responsive resize
+new ResizeObserver(() => {
+  chart.applyOptions({ width: wrap.clientWidth, height: wrap.clientHeight });
+  setTimeout(drawOverlays, 100);
+}).observe(wrap);
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.key === 'y' || e.key === 'Y') decide('y');
   if (e.key === 'n' || e.key === 'N') decide('n');
   if (e.key === 'q' || e.key === 'Q') decide('q');
 });
 
+// ── Decision fetch ────────────────────────────────────────────────────────────
 function decide(ans) {
   document.getElementById('overlay').classList.add('show');
   fetch('/decide', {
@@ -447,9 +561,9 @@ function decide(ans) {
     if (data.done) {
       document.getElementById('overlay').classList.remove('show');
       document.getElementById('done-summary').innerHTML =
-        `סה"כ נסקרו: <strong>${data.reviewed}</strong><br>` +
-        `עסקאות שנלקחו: <strong>${data.taken}</strong><br>` +
-        `נשמר ל: <strong>${data.output_path}</strong>`;
+        `נסקרו: <strong>${data.reviewed}</strong><br>` +
+        `נלקחו: <strong>${data.taken}</strong><br>` +
+        `נשמר: <strong>${data.output_path}</strong>`;
       document.getElementById('done-screen').classList.add('show');
     } else {
       window.location.href = '/setup/' + data.next_rank;
@@ -484,8 +598,7 @@ def show_setup(rank):
 
     setup["symbol"] = STATE["symbol"]
 
-    # Build chart JSON
-    chart_json = _build_chart_json(
+    chart_data = _build_chart_data(
         STATE["m15_df"],
         setup,
         STATE["candidates_raw"],
@@ -496,7 +609,8 @@ def show_setup(rank):
         setup=setup,
         total=len(setups),
         symbol=STATE["symbol"],
-        chart_json=chart_json,
+        chart_data=json.dumps(chart_data, cls=_Encoder),
+        setup_json=json.dumps(setup, cls=_Encoder),
     )
 
 
