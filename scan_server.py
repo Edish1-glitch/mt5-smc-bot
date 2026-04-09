@@ -401,9 +401,18 @@ const LW         = LightweightCharts;
 
 // ── Create chart ──────────────────────────────────────────────────────────────
 const wrap = document.getElementById('chart-wrap');
+
+// Calculate chart height explicitly — flex:1 height is 0 at script run time
+function calcChartH() {
+  const tb = document.getElementById('topbar').offsetHeight    || 44;
+  const bb = document.getElementById('bottombar').offsetHeight || 60;
+  return Math.max(200, window.innerHeight - tb - bb);
+}
+wrap.style.height = calcChartH() + 'px';
+
 const chart = LW.createChart(wrap, {
-  width:  wrap.clientWidth,
-  height: wrap.clientHeight,
+  width:  wrap.clientWidth  || window.innerWidth,
+  height: calcChartH(),
   layout: {
     background: { type: LW.ColorType.Solid, color: '#131722' },
     textColor: '#d1d4dc',
@@ -536,10 +545,12 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
 });
 
 // Responsive resize
-new ResizeObserver(() => {
-  chart.applyOptions({ width: wrap.clientWidth, height: wrap.clientHeight });
+window.addEventListener('resize', () => {
+  const h = calcChartH();
+  wrap.style.height = h + 'px';
+  chart.applyOptions({ width: wrap.clientWidth, height: h });
   setTimeout(drawOverlays, 100);
-}).observe(wrap);
+});
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
