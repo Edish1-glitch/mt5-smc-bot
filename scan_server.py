@@ -261,14 +261,23 @@ _HTML = """
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #131722; color: #d1d4dc;
          font-family: -apple-system, 'Trebuchet MS', Arial, sans-serif;
-         display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+         overflow: hidden; }
 
-  /* ─ Top bar ─ */
+  /* ─ Fixed layout — viewport-relative, dimensions always known ─ */
   #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 10;
     background: #1e222d; border-bottom: 1px solid #2a2e39;
-    padding: 8px 16px; display: flex; align-items: center;
-    gap: 16px; flex-shrink: 0; height: 44px;
+    padding: 0 16px; display: flex; align-items: center; gap: 16px;
   }
+  #chart-wrap {
+    position: fixed; top: 44px; left: 0; right: 0; bottom: 60px;
+  }
+  #bottombar {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 60px; z-index: 10;
+    background: #1e222d; border-top: 1px solid #2a2e39;
+    padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  }
+
   #topbar .progress { font-size: 20px; font-weight: 700; color: #fff; min-width: 80px; }
   #topbar .sym      { font-size: 14px; font-weight: 600; color: #d1d4dc; }
   #topbar .ts       { font-size: 12px; color: #787b86; }
@@ -277,19 +286,8 @@ _HTML = """
   .badge-bull { background: #1a4731; color: #4caf50; border: 1px solid #2e7d32; }
   .badge-bear { background: #4d1d1d; color: #f44336; border: 1px solid #c62828; }
   .badge-fvg  { background: #332900; color: #ffd600; border: 1px solid #f57f17; }
-  .badge-all  { background: #0a2744; color: '#29b6f6'; border: 1px solid #0277bd; }
+  .badge-all  { background: #0a2744; color: #29b6f6; border: 1px solid #0277bd; }
   .badge-rr   { background: #1e222d; color: #d1d4dc; border: 1px solid #2a2e39; }
-
-  /* ─ Chart area ─ */
-  #chart-wrap { flex: 1; min-height: 0; position: relative; }
-  #chart      { width: 100%; height: 100%; }
-
-  /* ─ Bottom bar ─ */
-  #bottombar {
-    background: #1e222d; border-top: 1px solid #2a2e39;
-    padding: 10px 16px; display: flex; align-items: center;
-    gap: 12px; flex-shrink: 0; height: 60px;
-  }
   .levels {
     display: flex; gap: 16px; font-size: 12px;
   }
@@ -400,19 +398,12 @@ const TOTAL      = {{ total }};
 const LW         = LightweightCharts;
 
 // ── Create chart ──────────────────────────────────────────────────────────────
+// #chart-wrap is position:fixed — viewport dimensions are available immediately.
+// autoSize:true fills the container via ResizeObserver, no manual sizing needed.
 const wrap = document.getElementById('chart-wrap');
 
-// Calculate chart height explicitly — flex:1 height is 0 at script run time
-function calcChartH() {
-  const tb = document.getElementById('topbar').offsetHeight    || 44;
-  const bb = document.getElementById('bottombar').offsetHeight || 60;
-  return Math.max(200, window.innerHeight - tb - bb);
-}
-wrap.style.height = calcChartH() + 'px';
-
 const chart = LW.createChart(wrap, {
-  width:  wrap.clientWidth  || window.innerWidth,
-  height: calcChartH(),
+  autoSize: true,
   layout: {
     background: { type: LW.ColorType.Solid, color: '#131722' },
     textColor: '#d1d4dc',
@@ -544,11 +535,8 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
   setTimeout(drawOverlays, 50);
 });
 
-// Responsive resize
+// Responsive resize — autoSize handles chart dimensions; just redraw overlays
 window.addEventListener('resize', () => {
-  const h = calcChartH();
-  wrap.style.height = h + 'px';
-  chart.applyOptions({ width: wrap.clientWidth, height: h });
   setTimeout(drawOverlays, 100);
 });
 
