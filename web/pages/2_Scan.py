@@ -334,8 +334,10 @@ window.addEventListener('resize', () => setTimeout(drawOverlays, 100));
 with st.sidebar:
     st.header("הגדרות סקאן")
     symbol    = st.selectbox("סימבול", config.SYMBOLS, index=0)
-    date_from = st.date_input("מתאריך", value=pd.Timestamp("2024-01-01"))
-    date_to   = st.date_input("עד תאריך", value=pd.Timestamp("2024-06-01"))
+    default_to   = pd.Timestamp.today().normalize()
+    default_from = default_to - pd.Timedelta(days=55)
+    date_from = st.date_input("מתאריך", value=default_from)
+    date_to   = st.date_input("עד תאריך", value=default_to)
     max_setups = st.slider("מקסימום סטאפים", 5, 100, 25)
     scan_btn  = st.button("🔍 סרוק סטאפים", type="primary", use_container_width=True)
 

@@ -160,19 +160,26 @@ def run_backtest(
             continue
 
         # ── Step 4: FVG — incremental mitigation ─────────────────────────────
-        for j in range(cached_fvg_end, i):
-            c = m15_df.iloc[j]
-            update_mitigation(cached_fvg_list, c["high"], c["low"])
-        cached_fvg_end = i
+        if config.REQUIRE_FVG:
+            for j in range(cached_fvg_end, i):
+                c = m15_df.iloc[j]
+                update_mitigation(cached_fvg_list, c["high"], c["low"])
+            cached_fvg_end = i
 
-        if not fvg_near_price(cached_fvg_list, fib.entry,
-                              config.FVG_PROXIMITY, h1_bias_cache):
-            continue
+            if not fvg_near_price(cached_fvg_list, fib.entry,
+                                  config.FVG_PROXIMITY, h1_bias_cache):
+                continue
 
         # ── All conditions met → open trade ──────────────────────────────────
         lot = calculate_lot_size(risk_per_trade, fib.sl_distance, symbol)
         if lot <= 0:
             continue
+
+        # Resolve impulse swing timestamps for visual review
+        sh_bar = cached_last_bos.get("swing_high_bar")
+        sl_bar = cached_last_bos.get("swing_low_bar")
+        sh_time = m15_df.index[sh_bar] if sh_bar is not None and sh_bar < len(m15_df) else None
+        sl_time = m15_df.index[sl_bar] if sl_bar is not None and sl_bar < len(m15_df) else None
 
         open_trade = Trade(
             symbol      = symbol,
@@ -183,6 +190,10 @@ def run_backtest(
             entry_time  = bar_time,
             lot_size    = lot,
             risk_usd    = risk_per_trade,
+            impulse_high      = cached_last_bos["swing_high"],
+            impulse_low       = cached_last_bos["swing_low"],
+            impulse_high_time = sh_time,
+            impulse_low_time  = sl_time,
             result      = None,
         )
 

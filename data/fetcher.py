@@ -70,13 +70,22 @@ _YF_MAX_DAYS = {
 
 # ── Auto-detect ───────────────────────────────────────────────────────────────
 
-def _detect_source() -> str:
+def _detect_source(timeframe: str = "", date_from: str = "", date_to: str = "") -> str:
     if os.environ.get("OANDA_TOKEN"):
         return "oanda"
     if os.environ.get("MT5_BRIDGE_URL"):
         return "bridge"
     if platform.system() == "Windows":
         return "mt5"
+    # yfinance M15 is limited to ~60 days; use Dukascopy for longer ranges
+    if date_from and date_to and timeframe:
+        max_days = _YF_MAX_DAYS.get(timeframe, 9999)
+        try:
+            days_requested = (datetime.fromisoformat(date_to) - datetime.fromisoformat(date_from)).days
+        except Exception:
+            days_requested = 0
+        if days_requested > max_days - 5:
+            return "dukascopy"
     return "yfinance"
 
 
@@ -101,7 +110,7 @@ def get_ohlcv(
     source    : 'auto' | 'oanda' | 'yfinance' | 'mt5' | 'bridge'
     """
     if source == "auto":
-        source = _detect_source()
+        source = _detect_source(timeframe, date_from, date_to)
 
     cache_path = CACHE_DIR / f"{symbol}_{timeframe}_{date_from}_{date_to}_{source}.parquet"
     if cache_path.exists():
@@ -405,7 +414,7 @@ def _fetch_from_dukascopy(symbol, timeframe, date_from, date_to):
             recs = []
             for i in range(0, len(raw) - sz + 1, sz):
                 ts_ms, op, hi, lo, cl, vol = struct.unpack_from(fmt, raw, i)
-                ts = midnight + timedelta(milliseconds=int(ts_ms))
+                ts = midnight + timedelta(seconds=int(ts_ms))
                 recs.append((ts, op / mult, hi / mult, lo / mult, cl / mult, vol))
 
             if recs:

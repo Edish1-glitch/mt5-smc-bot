@@ -16,6 +16,8 @@ SWING_N_LTF = 5   # on 15M
 # ── FVG (Fair Value Gap / Imbalance) ─────────────────────────────────────────
 FVG_MIN_SIZE  = 0.0002   # minimum gap size in price units (filters micro-gaps)
 FVG_PROXIMITY = 0.0010   # max distance from 75% Fib for FVG to be "at" entry
+# Set to False to skip FVG check (useful for validating other conditions first)
+REQUIRE_FVG   = False
 
 # ── Liquidity sweeps ─────────────────────────────────────────────────────────
 LIQ_TOLERANCE = 0.05   # % tolerance for two swing highs/lows to count as "equal"

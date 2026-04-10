@@ -24,8 +24,10 @@ with st.sidebar:
     st.header("הגדרות")
     symbols    = st.multiselect("סימבולים", config.SYMBOLS,
                                 default=["EURUSD", "GBPUSD"])
-    date_from  = st.date_input("מתאריך", value=pd.Timestamp("2024-01-01"))
-    date_to    = st.date_input("עד תאריך", value=pd.Timestamp("2024-06-01"))
+    default_to   = pd.Timestamp.today().normalize()
+    default_from = default_to - pd.Timedelta(days=55)
+    date_from  = st.date_input("מתאריך", value=default_from)
+    date_to    = st.date_input("עד תאריך", value=default_to)
     capital    = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
                                  step=1000, min_value=1000)
     risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,

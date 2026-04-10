@@ -29,6 +29,12 @@ class Trade:
     lot_size:   float = 0.0
     risk_usd:   float = 0.0   # dollars risked
 
+    # Fib impulse anchors (for visual review)
+    impulse_high: float = 0.0
+    impulse_low:  float = 0.0
+    impulse_high_time: Optional[pd.Timestamp] = None
+    impulse_low_time:  Optional[pd.Timestamp] = None
+
     # Outcome
     exit_price: Optional[float] = None
     result:     Optional[str]   = None   # 'win' | 'loss' | 'open'
