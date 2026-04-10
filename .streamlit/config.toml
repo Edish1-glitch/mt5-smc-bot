@@ -1,0 +1,12 @@
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+backgroundColor = "#131722"
+secondaryBackgroundColor = "#1e222d"
+textColor = "#d1d4dc"
+primaryColor = "#29b6f6"

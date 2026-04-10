@@ -25,3 +25,7 @@ flask>=3.0
 
 # Windows only — גישה ישירה ל-MT5
 # MetaTrader5>=5.0
+
+# ── Web dashboard (Streamlit) ─────────────────────────────────────────────────
+streamlit>=1.30
+plotly>=5.18
