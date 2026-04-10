@@ -24,16 +24,20 @@ def find_swing_highs(highs: np.ndarray, n: int = 5) -> np.ndarray:
     """
     Return a boolean array; True at index i if high[i] is a swing high.
 
+    Uses strict fractal comparison (>): high[i] must be STRICTLY greater
+    than all n bars on each side. Prevents false positives when multiple
+    adjacent bars share the same high value.
+
     Parameters
     ----------
     highs : np.ndarray  — high prices
-    n     : int         — bars on each side required
+    n     : int         — bars on each side required (fractal window = 2n+1)
     """
     length = len(highs)
     result = np.zeros(length, dtype=bool)
     for i in range(n, length - n):
-        window = highs[i - n: i + n + 1]
-        if highs[i] == window.max():
+        if (all(highs[i] > highs[i - j] for j in range(1, n + 1)) and
+                all(highs[i] > highs[i + j] for j in range(1, n + 1))):
             result[i] = True
     return result
 
@@ -41,12 +45,15 @@ def find_swing_highs(highs: np.ndarray, n: int = 5) -> np.ndarray:
 def find_swing_lows(lows: np.ndarray, n: int = 5) -> np.ndarray:
     """
     Return a boolean array; True at index i if low[i] is a swing low.
+
+    Uses strict fractal comparison (<): low[i] must be STRICTLY less than
+    all n bars on each side.
     """
     length = len(lows)
     result = np.zeros(length, dtype=bool)
     for i in range(n, length - n):
-        window = lows[i - n: i + n + 1]
-        if lows[i] == window.min():
+        if (all(lows[i] < lows[i - j] for j in range(1, n + 1)) and
+                all(lows[i] < lows[i + j] for j in range(1, n + 1))):
             result[i] = True
     return result
 

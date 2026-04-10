@@ -232,16 +232,24 @@ def _build_chart_data(
         fvgs.append({"top": round(float(fvg["top"]), 5),
                      "bottom": round(float(fvg["bottom"]), 5)})
 
+    # Timestamps for swing high/low bars (for fib diagonal anchor line)
+    sh_bar = bos.get("swing_high_bar")
+    sl_bar = bos.get("swing_low_bar")
+    sh_ts  = int(m15_df.index[sh_bar].timestamp()) if sh_bar is not None and sh_bar < len(m15_df) else None
+    sl_ts  = int(m15_df.index[sl_bar].timestamp()) if sl_bar is not None and sl_bar < len(m15_df) else None
+
     return {
         "candles":   candles,
         "markers":   sorted(markers, key=lambda m: m["time"]),
         "fvgs":      fvgs,
         "fib": {
-            "sl":    round(float(fib.sl),    5),
-            "entry": round(float(fib.entry), 5),
-            "tp":    round(float(fib.tp),    5),
-            "impulse_high": round(float(fib.impulse_high), 5),
-            "impulse_low":  round(float(fib.impulse_low),  5),
+            "sl":             round(float(fib.sl),    5),
+            "entry":          round(float(fib.entry), 5),
+            "tp":             round(float(fib.tp),    5),
+            "impulse_high":   round(float(fib.impulse_high), 5),
+            "impulse_low":    round(float(fib.impulse_low),  5),
+            "swing_high_ts":  sh_ts,
+            "swing_low_ts":   sl_ts,
         },
         "bos_level": round(float(bos["level"]), 5),
         "direction": cand.direction,
@@ -464,9 +472,8 @@ series.createPriceLine({
 if (CHART_DATA.markers && CHART_DATA.markers.length)
   series.setMarkers(CHART_DATA.markers);
 
-// ── Canvas overlay: Fib zone + FVG rectangles ─────────────────────────────────
+// ── Canvas overlay: TradingView-style Fib retracement + FVG rectangles ──────
 function drawOverlays() {
-  // Remove old overlay if any
   const old = wrap.querySelector('canvas.overlay');
   if (old) old.remove();
 
@@ -477,50 +484,108 @@ function drawOverlays() {
   canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
   wrap.appendChild(canvas);
 
-  const ctx = canvas.getContext('2d');
+  const ctx  = canvas.getContext('2d');
+  const dir  = CHART_DATA.direction;
+  const ts   = chart.timeScale();
 
-  // Fibonacci retracement zone (full impulse move)
-  const dir    = CHART_DATA.direction;
-  const fibTop = dir === 'bear' ? fib.sl : fib.tp;
-  const fibBot = dir === 'bear' ? fib.tp : fib.sl;
-  const yTop   = series.priceToCoordinate(fibTop);
-  const yBot   = series.priceToCoordinate(fibBot);
+  // Fib levels: [ratio, price, color, label]
+  // For BEAR: 1.0 = swing_high (SL), 0.75 = entry, 0.0 = swing_low (TP)
+  // For BULL: 0.0 = swing_low (SL), 0.75 = entry, 1.0 = swing_high (TP)
+  const fibLevels = [
+    { ratio: '1.0',  price: fib.sl,    color: dir === 'bear' ? '#f44336' : '#4caf50', label: '1.0' },
+    { ratio: '0.75', price: fib.entry, color: '#ffd600',                               label: '0.75' },
+    { ratio: '0.5',  price: (fib.sl + fib.tp) / 2, color: 'rgba(180,180,180,0.55)',  label: '0.5' },
+    { ratio: '0.0',  price: fib.tp,    color: dir === 'bear' ? '#4caf50' : '#f44336', label: '0.0' },
+  ];
 
-  if (yTop !== null && yBot !== null && yBot > yTop) {
-    const h = yBot - yTop;
-    // Gradient fill: tight at entry level, fading outwards
-    const grad = ctx.createLinearGradient(0, yTop, 0, yBot);
-    grad.addColorStop(0, 'rgba(41,182,246,0.03)');
-    grad.addColorStop(0.5,'rgba(41,182,246,0.09)');
-    grad.addColorStop(1, 'rgba(41,182,246,0.03)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, yTop, canvas.width, h);
+  // ── Diagonal anchor line (swing_high → swing_low) ────────────────────────
+  const shTs  = fib.swing_high_ts;
+  const slTs  = fib.swing_low_ts;
+  const shX   = shTs ? ts.timeToCoordinate(shTs) : null;
+  const slX   = slTs ? ts.timeToCoordinate(slTs) : null;
+  const shY   = series.priceToCoordinate(fib.impulse_high);
+  const slY   = series.priceToCoordinate(fib.impulse_low);
 
-    // Left edge label: "Fib zone"
-    ctx.font = 'bold 10px Arial';
-    ctx.fillStyle = 'rgba(41,182,246,0.55)';
-    ctx.fillText('Fib zone', 6, yTop + 13);
-
-    // Top & bottom anchor lines (thin)
-    ctx.strokeStyle = 'rgba(41,182,246,0.25)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4,4]);
-    ctx.beginPath(); ctx.moveTo(0, yTop); ctx.lineTo(canvas.width, yTop); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, yBot); ctx.lineTo(canvas.width, yBot); ctx.stroke();
+  // X anchor from which horizontal fib lines start (leftmost of the two swing bars)
+  let anchorX = 0;
+  if (shX !== null && slX !== null) {
+    anchorX = Math.min(shX, slX);
+    // Draw diagonal connecting line
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth   = 1;
     ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(shX, shY);
+    ctx.lineTo(slX, slY);
+    ctx.stroke();
+    ctx.restore();
+
+    // Small circle anchors at each swing point
+    [[shX, shY], [slX, slY]].forEach(([x, y]) => {
+      if (x === null || y === null) return;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fill();
+    });
+  } else if (shX !== null) {
+    anchorX = shX;
+  } else if (slX !== null) {
+    anchorX = slX;
   }
 
-  // FVG zones (yellow)
+  // ── Horizontal fib level lines ────────────────────────────────────────────
+  for (const lv of fibLevels) {
+    const y = series.priceToCoordinate(lv.price);
+    if (y === null) continue;
+
+    ctx.save();
+    ctx.strokeStyle = lv.color;
+    ctx.lineWidth   = lv.ratio === '0.75' ? 1.5 : 1;
+    ctx.globalAlpha = lv.ratio === '0.5' ? 0.4 : 0.75;
+    ctx.setLineDash(lv.ratio === '0.75' ? [] : [4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(anchorX, y);
+    ctx.lineTo(canvas.width - 2, y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Ratio label on the left of the line
+    ctx.save();
+    ctx.font = `bold 10px 'Trebuchet MS', Arial`;
+    ctx.fillStyle = lv.color;
+    ctx.globalAlpha = lv.ratio === '0.5' ? 0.45 : 0.85;
+    ctx.fillText(lv.label, anchorX + 4, y - 3);
+    ctx.restore();
+  }
+
+  // ── Shade zone between entry (0.75) and SL (1.0) ────────────────────────
+  // This is where price needs to retrace for our entry
+  const yEntry = series.priceToCoordinate(fib.entry);
+  const ySL    = series.priceToCoordinate(fib.sl);
+  if (yEntry !== null && ySL !== null) {
+    const top = Math.min(yEntry, ySL);
+    const bot = Math.max(yEntry, ySL);
+    ctx.save();
+    ctx.fillStyle = dir === 'bear'
+      ? 'rgba(244,67,54,0.07)'
+      : 'rgba(76,175,80,0.07)';
+    ctx.fillRect(anchorX, top, canvas.width - anchorX, bot - top);
+    ctx.restore();
+  }
+
+  // ── FVG zones (yellow) ────────────────────────────────────────────────────
   for (const fvg of (CHART_DATA.fvgs || [])) {
     const yF1 = series.priceToCoordinate(fvg.top);
     const yF2 = series.priceToCoordinate(fvg.bottom);
     if (yF1 !== null && yF2 !== null && yF2 > yF1) {
-      ctx.fillStyle = 'rgba(255,235,59,0.10)';
+      ctx.fillStyle   = 'rgba(255,235,59,0.10)';
       ctx.strokeStyle = 'rgba(255,235,59,0.3)';
-      ctx.lineWidth = 0.5;
+      ctx.lineWidth   = 0.5;
       ctx.fillRect(0, yF1, canvas.width, yF2 - yF1);
       ctx.strokeRect(0, yF1, canvas.width, yF2 - yF1);
-      ctx.font = '9px Arial';
+      ctx.font      = '9px Arial';
       ctx.fillStyle = 'rgba(255,235,59,0.55)';
       ctx.fillText('FVG', 6, yF1 + 11);
     }

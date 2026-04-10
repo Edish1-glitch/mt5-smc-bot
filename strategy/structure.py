@@ -68,17 +68,26 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
 
         # Check bullish BOS: close above last swing high
         if last_sh_price is not None and closes[i] > last_sh_price:
-            # The impulse leg: from last swing low (before the swing high) to the swing high
-            # Approximate: use last_sl_bar's low as impulse_low
-            impulse_low  = lows[last_sl_bar] if last_sl_bar is not None else closes[i] * 0.99
-            impulse_high = last_sh_price
+            # impulse_high = swing high that was broken (TP target)
+            impulse_high     = float(highs[last_sh_bar]) if last_sh_bar is not None else closes[i]
+            swing_high_bar   = last_sh_bar if last_sh_bar is not None else i
+            # impulse_low = actual lowest low from swing_low_bar through BOS bar
+            if last_sl_bar is not None:
+                seg          = lows[last_sl_bar:i + 1]
+                impulse_low  = float(seg.min())
+                swing_low_bar = last_sl_bar + int(seg.argmin())
+            else:
+                impulse_low   = closes[i] * 0.99
+                swing_low_bar = i
             events.append({
-                "bar_idx":    i,
-                "timestamp":  idx[i],
-                "direction":  "bull",
-                "level":      last_sh_price,
-                "swing_low":  impulse_low,
-                "swing_high": impulse_high,
+                "bar_idx":        i,
+                "timestamp":      idx[i],
+                "direction":      "bull",
+                "level":          last_sh_price,
+                "swing_low":      impulse_low,
+                "swing_high":     impulse_high,
+                "swing_high_bar": swing_high_bar,
+                "swing_low_bar":  swing_low_bar,
             })
             # Reset after BOS — wait for new structure to form
             last_sh_price = None
@@ -86,15 +95,27 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
 
         # Check bearish BOS: close below last swing low
         elif last_sl_price is not None and closes[i] < last_sl_price:
-            impulse_high = highs[last_sh_bar] if last_sh_bar is not None else closes[i] * 1.01
-            impulse_low  = last_sl_price
+            # impulse_high = swing high that started the bearish move (SL level)
+            impulse_high    = float(highs[last_sh_bar]) if last_sh_bar is not None else closes[i] * 1.01
+            swing_high_bar  = last_sh_bar if last_sh_bar is not None else i
+            # impulse_low = actual lowest low from swing_low_bar through BOS bar
+            # (BOS bar wick often extends well below the broken swing low)
+            if last_sl_bar is not None:
+                seg           = lows[last_sl_bar:i + 1]
+                impulse_low   = float(seg.min())
+                swing_low_bar = last_sl_bar + int(seg.argmin())
+            else:
+                impulse_low   = closes[i]
+                swing_low_bar = i
             events.append({
-                "bar_idx":    i,
-                "timestamp":  idx[i],
-                "direction":  "bear",
-                "level":      last_sl_price,
-                "swing_low":  impulse_low,
-                "swing_high": impulse_high,
+                "bar_idx":        i,
+                "timestamp":      idx[i],
+                "direction":      "bear",
+                "level":          last_sl_price,
+                "swing_low":      impulse_low,
+                "swing_high":     impulse_high,
+                "swing_high_bar": swing_high_bar,
+                "swing_low_bar":  swing_low_bar,
             })
             last_sl_price = None
             last_sl_bar   = None

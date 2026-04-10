@@ -49,16 +49,16 @@ class TestEqualHighs:
 class TestDetectSweeps:
     def test_bullish_sweep_detected(self):
         """
-        Equal lows at ~1.0000.
-        Bar sweeps below (low=0.9990) but closes above (close=1.0010).
+        Two clear fractal swing lows at 0.980 (bars 2 and 6), strictly lower
+        than their n=2 neighbours.  Bar 10 sweeps below 0.980 (low=0.975)
+        but closes back above (close=0.990) → confirmed bull sweep.
         """
-        # Build: two swing lows at 1.0000, then a sweep candle
-        highs  = [1.0050, 1.0020, 1.0050, 1.0020, 1.0050, 1.0020, 1.0050,
-                  1.0020, 1.0050, 1.0020, 1.0050, 1.0070, 1.0050, 1.0020, 1.0050]
-        lows   = [1.0000, 0.9995, 1.0000, 0.9995, 1.0000, 0.9995, 1.0000,
-                  0.9995, 1.0000, 0.9995, 1.0000, 0.9990, 1.0000, 0.9995, 1.0000]
-        closes = [1.0040, 1.0010, 1.0040, 1.0010, 1.0040, 1.0010, 1.0040,
-                  1.0010, 1.0040, 1.0010, 1.0040, 1.0020, 1.0040, 1.0010, 1.0040]
+        highs  = [1.005, 1.002, 1.000, 1.002, 1.005, 1.002, 1.000, 1.002, 1.005, 1.002,
+                  1.002, 1.010, 1.005, 1.002, 1.005]
+        lows   = [1.000, 0.995, 0.980, 0.995, 1.000, 0.995, 0.980, 0.995, 1.000, 0.995,
+                  0.975, 0.995, 1.000, 0.995, 1.000]
+        closes = [1.003, 0.997, 0.984, 0.997, 1.003, 0.997, 0.984, 0.997, 1.003, 0.997,
+                  0.990, 1.005, 1.003, 0.997, 1.003]
         df = make_df(highs, lows, closes)
         sweeps = detect_sweeps(df, n_swing=2, tolerance_pct=0.1)
         bull_sweeps = [s for s in sweeps if s["direction"] == "bull"]
