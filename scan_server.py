@@ -152,7 +152,7 @@ def _build_chart_data(
     m15_df,
     setup: dict,
     candidates_raw: list[SetupCandidate],
-    context_bars: int = 120,
+    context_bars: int = 200,
 ) -> dict:
     """Build chart data dict for TradingView Lightweight Charts JS library."""
     cand = next((c for c in candidates_raw if c.bar_idx == setup["bar_idx"]), None)
@@ -414,17 +414,23 @@ const chart = LW.createChart(wrap, {
   autoSize: true,
   layout: {
     background: { type: LW.ColorType.Solid, color: '#131722' },
-    textColor: '#d1d4dc',
+    textColor: '#b2b5be',
     fontSize: 12,
+    fontFamily: "'Trebuchet MS', Roboto, Ubuntu, sans-serif",
   },
   grid: {
-    vertLines: { color: '#1e222d' },
-    horzLines: { color: '#1e222d' },
+    vertLines: { color: 'rgba(42,46,57,0.5)' },
+    horzLines: { color: 'rgba(42,46,57,0.5)' },
   },
-  crosshair: { mode: LW.CrosshairMode.Normal },
+  crosshair: {
+    mode: LW.CrosshairMode.Normal,
+    vertLine: { color: '#758696', labelBackgroundColor: '#2a2e39' },
+    horzLine: { color: '#758696', labelBackgroundColor: '#2a2e39' },
+  },
   rightPriceScale: {
     borderColor: '#2a2e39',
     scaleMargins: { top: 0.08, bottom: 0.08 },
+    borderVisible: true,
   },
   timeScale: {
     borderColor: '#2a2e39',
@@ -432,6 +438,7 @@ const chart = LW.createChart(wrap, {
     secondsVisible: false,
     fixLeftEdge: true,
     fixRightEdge: true,
+    borderVisible: true,
   },
   handleScroll: true,
   handleScale:  true,
@@ -439,12 +446,17 @@ const chart = LW.createChart(wrap, {
 
 // ── Candlestick series ────────────────────────────────────────────────────────
 const series = chart.addCandlestickSeries({
-  upColor:        '#26a69a',
-  downColor:      '#ef5350',
-  borderUpColor:  '#26a69a',
-  borderDownColor:'#ef5350',
-  wickUpColor:    '#26a69a',
-  wickDownColor:  '#ef5350',
+  upColor:         '#26a69a',
+  downColor:       '#ef5350',
+  borderUpColor:   '#26a69a',
+  borderDownColor: '#ef5350',
+  wickUpColor:     '#26a69a',
+  wickDownColor:   '#ef5350',
+  priceFormat: {
+    type:    'price',
+    precision: 5,
+    minMove: 0.00001,
+  },
 });
 series.setData(CHART_DATA.candles);
 
@@ -452,16 +464,16 @@ series.setData(CHART_DATA.candles);
 const fib = CHART_DATA.fib;
 
 series.createPriceLine({
-  price: fib.sl,    color: '#f44336', lineWidth: 1,
-  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'SL 100%',
+  price: fib.sl,    color: 'rgba(255,255,255,0.7)', lineWidth: 1,
+  lineStyle: LW.LineStyle.Solid, axisLabelVisible: true, title: '1',
 });
 series.createPriceLine({
-  price: fib.entry, color: '#ffd600', lineWidth: 1,
-  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'Entry 75%',
+  price: fib.entry, color: '#f0b429', lineWidth: 1,
+  lineStyle: LW.LineStyle.Solid, axisLabelVisible: true, title: '0.75',
 });
 series.createPriceLine({
-  price: fib.tp,    color: '#4caf50', lineWidth: 1,
-  lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'TP 0%',
+  price: fib.tp,    color: 'rgba(255,255,255,0.7)', lineWidth: 1,
+  lineStyle: LW.LineStyle.Solid, axisLabelVisible: true, title: '0',
 });
 series.createPriceLine({
   price: CHART_DATA.bos_level, color: '#29b6f6', lineWidth: 1,
@@ -479,99 +491,115 @@ function drawOverlays() {
 
   const canvas = document.createElement('canvas');
   canvas.className = 'overlay';
-  canvas.width  = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
-  canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = wrap.clientWidth;
+  const cssH = wrap.clientHeight;
+  canvas.width  = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.cssText = `position:absolute;top:0;left:0;width:${cssW}px;height:${cssH}px;pointer-events:none;z-index:3;`;
   wrap.appendChild(canvas);
 
-  const ctx  = canvas.getContext('2d');
-  const dir  = CHART_DATA.direction;
-  const ts   = chart.timeScale();
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);  // draw in CSS-pixel coordinates, sharp on Retina
+  const dir = CHART_DATA.direction;
+  const ts  = chart.timeScale();
 
-  // Fib levels: [ratio, price, color, label]
-  // For BEAR: 1.0 = swing_high (SL), 0.75 = entry, 0.0 = swing_low (TP)
-  // For BULL: 0.0 = swing_low (SL), 0.75 = entry, 1.0 = swing_high (TP)
+  // ── Anchor X: leftmost of the two swing bars ─────────────────────────────
+  const shTs = fib.swing_high_ts;
+  const slTs = fib.swing_low_ts;
+  const shX  = shTs ? ts.timeToCoordinate(shTs) : null;
+  const slX  = slTs ? ts.timeToCoordinate(slTs) : null;
+
+  let anchorX = 40;
+  if (shX !== null && slX !== null) anchorX = Math.min(shX, slX);
+  else if (shX !== null)            anchorX = shX;
+  else if (slX !== null)            anchorX = slX;
+  anchorX = Math.max(anchorX, 16);  // never draw in the very corner
+
+  const rightEdge = canvas.width - 78;  // leave room for price axis
+
+  // ── Fib levels (TradingView convention) ───────────────────────────────────
+  // BEAR: 1 = top (SL/impulse_high), 0 = bottom (TP/impulse_low)
+  // BULL: 1 = bottom (SL/impulse_low), 0 = top (TP/impulse_high)
+  const priceTop = fib.sl;   // SL is always the "far" extreme
+  const priceBot = fib.tp;   // TP is always the "near" target
+  const priceMid = (priceTop + priceBot) / 2;
+
   const fibLevels = [
-    { ratio: '1.0',  price: fib.sl,    color: dir === 'bear' ? '#f44336' : '#4caf50', label: '1.0' },
-    { ratio: '0.75', price: fib.entry, color: '#ffd600',                               label: '0.75' },
-    { ratio: '0.5',  price: (fib.sl + fib.tp) / 2, color: 'rgba(180,180,180,0.55)',  label: '0.5' },
-    { ratio: '0.0',  price: fib.tp,    color: dir === 'bear' ? '#4caf50' : '#f44336', label: '0.0' },
+    { label: '1',    price: priceTop, color: 'rgba(255,255,255,0.85)', lw: 1   },
+    { label: '0.75', price: fib.entry,color: '#f0b429',                lw: 1.5 },
+    { label: '0.5',  price: priceMid, color: 'rgba(255,255,255,0.45)', lw: 0.75},
+    { label: '0',    price: priceBot, color: 'rgba(255,255,255,0.85)', lw: 1   },
   ];
 
-  // ── Diagonal anchor line (swing_high → swing_low) ────────────────────────
-  const shTs  = fib.swing_high_ts;
-  const slTs  = fib.swing_low_ts;
-  const shX   = shTs ? ts.timeToCoordinate(shTs) : null;
-  const slX   = slTs ? ts.timeToCoordinate(slTs) : null;
-  const shY   = series.priceToCoordinate(fib.impulse_high);
-  const slY   = series.priceToCoordinate(fib.impulse_low);
+  // ── Bracket: vertical connector + ticks at top and bottom extremes ────────
+  const yTop = series.priceToCoordinate(priceTop);
+  const yBot = series.priceToCoordinate(priceBot);
+  const TICK = 8;  // pixels the tick extends to the left of anchorX
 
-  // X anchor from which horizontal fib lines start (leftmost of the two swing bars)
-  let anchorX = 0;
-  if (shX !== null && slX !== null) {
-    anchorX = Math.min(shX, slX);
-    // Draw diagonal connecting line
+  if (yTop !== null && yBot !== null) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth   = 1;
-    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth   = 1.5;
+    // Vertical connector
     ctx.beginPath();
-    ctx.moveTo(shX, shY);
-    ctx.lineTo(slX, slY);
+    ctx.moveTo(anchorX, yTop);
+    ctx.lineTo(anchorX, yBot);
+    ctx.stroke();
+    // Top tick
+    ctx.beginPath();
+    ctx.moveTo(anchorX - TICK, yTop);
+    ctx.lineTo(anchorX + 4, yTop);
+    ctx.stroke();
+    // Bottom tick
+    ctx.beginPath();
+    ctx.moveTo(anchorX - TICK, yBot);
+    ctx.lineTo(anchorX + 4, yBot);
     ctx.stroke();
     ctx.restore();
-
-    // Small circle anchors at each swing point
-    [[shX, shY], [slX, slY]].forEach(([x, y]) => {
-      if (x === null || y === null) return;
-      ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fill();
-    });
-  } else if (shX !== null) {
-    anchorX = shX;
-  } else if (slX !== null) {
-    anchorX = slX;
   }
 
-  // ── Horizontal fib level lines ────────────────────────────────────────────
+  // ── Horizontal fib lines + labels ─────────────────────────────────────────
   for (const lv of fibLevels) {
     const y = series.priceToCoordinate(lv.price);
     if (y === null) continue;
 
+    // Line
     ctx.save();
     ctx.strokeStyle = lv.color;
-    ctx.lineWidth   = lv.ratio === '0.75' ? 1.5 : 1;
-    ctx.globalAlpha = lv.ratio === '0.5' ? 0.4 : 0.75;
-    ctx.setLineDash(lv.ratio === '0.75' ? [] : [4, 4]);
+    ctx.lineWidth   = lv.lw;
     ctx.beginPath();
     ctx.moveTo(anchorX, y);
-    ctx.lineTo(canvas.width - 2, y);
+    ctx.lineTo(rightEdge, y);
     ctx.stroke();
     ctx.restore();
 
-    // Ratio label on the left of the line
+    // Label: "ratio  (price)" — with dark background for legibility
+    const priceStr = lv.price.toFixed(5);
+    const labelStr = `${lv.label}  (${priceStr})`;
+    const labelX   = anchorX + 10;
+    const labelY   = y - 4;
     ctx.save();
-    ctx.font = `bold 10px 'Trebuchet MS', Arial`;
+    ctx.font = `bold 11px 'Trebuchet MS', Arial`;
+    const tw = ctx.measureText(labelStr).width;
+    ctx.fillStyle = 'rgba(19,23,34,0.75)';
+    ctx.fillRect(labelX - 2, labelY - 11, tw + 6, 14);
     ctx.fillStyle = lv.color;
-    ctx.globalAlpha = lv.ratio === '0.5' ? 0.45 : 0.85;
-    ctx.fillText(lv.label, anchorX + 4, y - 3);
+    ctx.fillText(labelStr, labelX, labelY);
     ctx.restore();
   }
 
-  // ── Shade zone between entry (0.75) and SL (1.0) ────────────────────────
-  // This is where price needs to retrace for our entry
+  // ── Shaded entry zone: between 0.75 and 1.0 ───────────────────────────────
   const yEntry = series.priceToCoordinate(fib.entry);
-  const ySL    = series.priceToCoordinate(fib.sl);
+  const ySL    = series.priceToCoordinate(priceTop);
   if (yEntry !== null && ySL !== null) {
     const top = Math.min(yEntry, ySL);
     const bot = Math.max(yEntry, ySL);
     ctx.save();
     ctx.fillStyle = dir === 'bear'
-      ? 'rgba(244,67,54,0.07)'
-      : 'rgba(76,175,80,0.07)';
-    ctx.fillRect(anchorX, top, canvas.width - anchorX, bot - top);
+      ? 'rgba(240,180,41,0.08)'
+      : 'rgba(240,180,41,0.08)';
+    ctx.fillRect(anchorX, top, rightEdge - anchorX, bot - top);
     ctx.restore();
   }
 

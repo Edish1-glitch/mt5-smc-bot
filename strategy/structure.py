@@ -56,6 +56,15 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
     last_sl_price = None   # most recent confirmed swing low price
     last_sl_bar   = None
 
+    # For fib anchoring: track the absolute HIGHEST high and LOWEST low
+    # across every bar since the last BOS reset (not just fractal pivots).
+    # This ensures the fib spans the full visible move, matching how a trader
+    # would manually draw the fib tool across the entire impulse leg.
+    max_high_price = None
+    max_high_bar   = None
+    min_low_price  = None
+    min_low_bar    = None
+
     for i in range(len(df)):
         # Update the "last confirmed swing high/low" BEFORE checking breaks
         # (swing at i is confirmed only if i <= len-n-1, already handled by get_swing_points)
@@ -66,16 +75,30 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
             last_sl_price = lows[i]
             last_sl_bar   = i
 
+        # Track absolute high/low of every bar since reset (for fib anchoring)
+        if max_high_price is None or highs[i] > max_high_price:
+            max_high_price = highs[i]
+            max_high_bar   = i
+        if min_low_price is None or lows[i] < min_low_price:
+            min_low_price = lows[i]
+            min_low_bar   = i
+
         # Check bullish BOS: close above last swing high
         if last_sh_price is not None and closes[i] > last_sh_price:
-            # impulse_high = swing high that was broken (TP target)
-            impulse_high     = float(highs[last_sh_bar]) if last_sh_bar is not None else closes[i]
-            swing_high_bar   = last_sh_bar if last_sh_bar is not None else i
-            # impulse_low = actual lowest low from swing_low_bar through BOS bar
-            if last_sl_bar is not None:
-                seg          = lows[last_sl_bar:i + 1]
-                impulse_low  = float(seg.min())
-                swing_low_bar = last_sl_bar + int(seg.argmin())
+            # TP  = broken swing high
+            impulse_high   = float(highs[last_sh_bar])
+            swing_high_bar = last_sh_bar
+            # SL  = lowest confirmed fractal SL in last 100 bars (origin of bull leg)
+            win_start = max(0, i - 100)
+            best_sl_price, best_sl_bar = None, None
+            for j in range(win_start, i):
+                if swing_l[j] and (best_sl_price is None or lows[j] < best_sl_price):
+                    best_sl_price = lows[j]
+                    best_sl_bar   = j
+            if best_sl_bar is not None:
+                seg           = lows[best_sl_bar:i + 1]
+                impulse_low   = float(seg.min())
+                swing_low_bar = best_sl_bar + int(seg.argmin())
             else:
                 impulse_low   = closes[i] * 0.99
                 swing_low_bar = i
@@ -89,28 +112,31 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
                 "swing_high_bar": swing_high_bar,
                 "swing_low_bar":  swing_low_bar,
             })
-            # Full reset after BOS — next BOS must use fresh local swing points.
-            # Resetting all 4 vars ensures the fib anchors to the recent
-            # impulse, not a stale swing from many bars/months earlier.
-            last_sh_price = None
-            last_sh_bar   = None
-            last_sl_price = None
-            last_sl_bar   = None
+            last_sh_price  = None;  last_sh_bar   = None
+            last_sl_price  = None;  last_sl_bar   = None
+            max_high_price = None;  max_high_bar  = None
+            min_low_price  = None;  min_low_bar   = None
 
         # Check bearish BOS: close below last swing low
         elif last_sl_price is not None and closes[i] < last_sl_price:
-            # impulse_high = swing high that started the bearish move (SL level)
-            impulse_high    = float(highs[last_sh_bar]) if last_sh_bar is not None else closes[i] * 1.01
-            swing_high_bar  = last_sh_bar if last_sh_bar is not None else i
-            # impulse_low = actual lowest low from swing_low_bar through BOS bar
-            # (BOS bar wick often extends well below the broken swing low)
-            if last_sl_bar is not None:
-                seg           = lows[last_sl_bar:i + 1]
-                impulse_low   = float(seg.min())
-                swing_low_bar = last_sl_bar + int(seg.argmin())
+            # SL  = highest confirmed fractal SH in last 100 bars (origin of bear leg)
+            win_start = max(0, i - 100)
+            best_sh_price, best_sh_bar = None, None
+            for j in range(win_start, i):
+                if swing_h[j] and (best_sh_price is None or highs[j] > best_sh_price):
+                    best_sh_price = highs[j]
+                    best_sh_bar   = j
+            if best_sh_bar is not None:
+                impulse_high   = float(best_sh_price)
+                swing_high_bar = best_sh_bar
             else:
-                impulse_low   = closes[i]
-                swing_low_bar = i
+                impulse_high   = closes[i] * 1.01
+                swing_high_bar = i
+            # TP  = lowest low from swing_high_bar to BOS bar
+            seg_start     = best_sh_bar if best_sh_bar is not None else win_start
+            seg_l         = lows[seg_start:i + 1]
+            impulse_low   = float(seg_l.min())
+            swing_low_bar = seg_start + int(seg_l.argmin())
             events.append({
                 "bar_idx":        i,
                 "timestamp":      idx[i],
@@ -121,11 +147,10 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
                 "swing_high_bar": swing_high_bar,
                 "swing_low_bar":  swing_low_bar,
             })
-            # Full reset — same reason as bull BOS above
-            last_sh_price = None
-            last_sh_bar   = None
-            last_sl_price = None
-            last_sl_bar   = None
+            last_sh_price  = None;  last_sh_bar   = None
+            last_sl_price  = None;  last_sl_bar   = None
+            max_high_price = None;  max_high_bar  = None
+            min_low_price  = None;  min_low_bar   = None
 
     return events
 
