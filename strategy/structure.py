@@ -89,9 +89,13 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
                 "swing_high_bar": swing_high_bar,
                 "swing_low_bar":  swing_low_bar,
             })
-            # Reset after BOS — wait for new structure to form
+            # Full reset after BOS — next BOS must use fresh local swing points.
+            # Resetting all 4 vars ensures the fib anchors to the recent
+            # impulse, not a stale swing from many bars/months earlier.
             last_sh_price = None
             last_sh_bar   = None
+            last_sl_price = None
+            last_sl_bar   = None
 
         # Check bearish BOS: close below last swing low
         elif last_sl_price is not None and closes[i] < last_sl_price:
@@ -117,6 +121,9 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
                 "swing_high_bar": swing_high_bar,
                 "swing_low_bar":  swing_low_bar,
             })
+            # Full reset — same reason as bull BOS above
+            last_sh_price = None
+            last_sh_bar   = None
             last_sl_price = None
             last_sl_bar   = None
 
