@@ -16,8 +16,19 @@ st.title("🔬 Run Backtest")
 
 import config
 from data.fetcher import get_ohlcv
-from backtest.engine import run_backtest
+from backtest.engine import run_backtest as _run_backtest
 from backtest.results import compute_stats, equity_curve
+
+
+@st.cache_data(show_spinner=False)
+def _cached_backtest(symbol, date_from_str, date_to_str, risk_trade):
+    """Cache backtest results — same params = instant re-run."""
+    m15 = get_ohlcv(symbol, "M15", date_from_str, date_to_str)
+    h1  = get_ohlcv(symbol, "H1",  date_from_str, date_to_str)
+    if m15 is None or len(m15) < 50:
+        return None, None, None
+    trades = _run_backtest(m15, h1, symbol, risk_per_trade=risk_trade)
+    return trades, m15, h1
 
 # ── Sidebar — inputs ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -33,15 +44,12 @@ with st.sidebar:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if run_btn:
-    with st.spinner(f"טוען נתונים ומריץ בקטסט על {symbol}…"):
+    with st.spinner(f"טוען נתונים ומריץ בקטסט על {symbol}… (עלול לקחת כמה דקות בפעם הראשונה)"):
         try:
-            m15 = get_ohlcv(symbol, str(date_from), str(date_to), "M15")
-            h1  = get_ohlcv(symbol, str(date_from), str(date_to), "H1")
-            if m15 is None or len(m15) < 50:
+            trades, m15, h1 = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade)
+            if trades is None:
                 st.error("לא מספיק נתוני M15. נסה טווח תאריכים רחב יותר.")
                 st.stop()
-
-            trades = run_backtest(m15, h1, symbol, risk_per_trade=risk_trade)
             stats  = compute_stats(trades, capital)
 
             st.session_state["bt_trades"] = trades

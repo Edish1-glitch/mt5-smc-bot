@@ -351,8 +351,8 @@ with st.sidebar:
 if scan_btn:
     with st.spinner(f"טוען נתונים ומריץ סקאן על {symbol}…"):
         try:
-            m15 = get_ohlcv(symbol, str(date_from), str(date_to), "M15")
-            h1  = get_ohlcv(symbol, str(date_from), str(date_to), "H1")
+            m15 = get_ohlcv(symbol, "M15", str(date_from), str(date_to))
+            h1  = get_ohlcv(symbol, "H1",  str(date_from), str(date_to))
             if m15 is None or len(m15) < 50:
                 st.error("לא מספיק נתונים.")
                 st.stop()

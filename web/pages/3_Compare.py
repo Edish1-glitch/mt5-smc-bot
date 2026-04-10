@@ -44,8 +44,8 @@ if run_btn:
     for i, sym in enumerate(symbols):
         progress.progress((i) / len(symbols), text=f"מריץ {sym}…")
         try:
-            m15 = get_ohlcv(sym, str(date_from), str(date_to), "M15")
-            h1  = get_ohlcv(sym, str(date_from), str(date_to), "H1")
+            m15 = get_ohlcv(sym, "M15", str(date_from), str(date_to))
+            h1  = get_ohlcv(sym, "H1",  str(date_from), str(date_to))
             if m15 is None or len(m15) < 50:
                 st.warning(f"{sym}: לא מספיק נתונים, מדלג.")
                 continue

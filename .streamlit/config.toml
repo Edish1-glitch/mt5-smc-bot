@@ -1,5 +1,5 @@
 [server]
-runOnSave = true
+runOnSave = false
 
 [browser]
 gatherUsageStats = false

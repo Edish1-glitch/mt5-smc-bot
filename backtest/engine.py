@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import config
 from strategy.swings    import get_swing_points
-from strategy.structure import detect_bos, get_htf_bias
+from strategy.structure import detect_bos
 from strategy.fvg       import detect_fvg, update_mitigation, fvg_near_price
 from strategy.liquidity import detect_sweeps, liquidity_was_swept
 from strategy.fibonacci import calculate_fib_levels, price_at_entry_zone
@@ -59,18 +59,28 @@ def run_backtest(
     total    = len(m15_df) - min_bars
     t0       = time.time()
 
-    # ── Signal cache ──────────────────────────────────────────────────────────
-    # Recomputed every SWING_N_LTF bars (new swings only form every n bars)
-    sig_recompute_at  = min_bars
-    cached_last_bos   = None   # last BOS event dict (or None)
-    cached_sweeps     = []
-    cached_fvg_list   = []
-    cached_fvg_end    = 0      # index up to which mitigation has been applied
-    prev_bos_bar_idx  = -1     # detect when BOS changes → reset FVG cache
+    # ── Pre-compute ALL signals ONCE (O(n) total instead of O(n²)) ───────────
+    print("  Pre-computing M15 signals… ", end="", flush=True)
+    full_bos    = detect_bos(m15_df, n=config.SWING_N_LTF)
+    full_sweeps = detect_sweeps(m15_df, n_swing=config.SWING_N_LTF)
+    print(f"{len(full_bos)} BOS, {len(full_sweeps)} sweeps", flush=True)
 
-    # H1 bias cache (only changes when a new H1 candle closes above/below a swing)
-    h1_bias_cache     = "none"
-    h1_bias_recheck_at = 0     # bar index when we should re-check HTF bias
+    print("  Pre-computing H1 bias… ", end="", flush=True)
+    h1_bos = detect_bos(h1_df, n=config.SWING_N_HTF)
+    print(f"{len(h1_bos)} H1 BOS events", flush=True)
+
+    # Monotonic pointers — advance as i increases (O(1) amortised per bar)
+    bos_ptr  = 0   # full_bos[bos_ptr-1] is the last M15 BOS at or before bar i
+    sw_ptr   = 0   # full_sweeps[:sw_ptr] are all sweeps at or before bar i
+    h1_ptr   = 0   # h1_bos[h1_ptr-1] is the last H1 BOS before bar_time
+
+    # FVG cache — rebuilt only when active BOS changes (≈20-30× total)
+    cached_fvg_list  = []
+    cached_fvg_end   = 0
+    prev_bos_bar_idx = -1
+
+    # H1 bias cache (updated via pointer, not recomputed)
+    h1_bias_cache = "none"
 
     for i in range(min_bars, len(m15_df)):
         bar      = m15_df.iloc[i]
@@ -107,35 +117,30 @@ def run_backtest(
             if open_trade is not None:
                 continue  # still in trade
 
-        # ── Step 2: refresh M15 signals (every SWING_N_LTF bars) ─────────────
-        if i >= sig_recompute_at:
-            past = m15_df.iloc[:i]
-            bos_list = detect_bos(past, n=config.SWING_N_LTF)
-            sweeps   = detect_sweeps(past, n_swing=config.SWING_N_LTF)
+        # ── Step 2: advance BOS + sweep pointers (O(1) amortised) ───────────
+        while bos_ptr < len(full_bos) and full_bos[bos_ptr]["bar_idx"] <= i:
+            bos_ptr += 1
+        cached_last_bos = full_bos[bos_ptr - 1] if bos_ptr > 0 else None
 
-            new_last_bos = bos_list[-1] if bos_list else None
+        while sw_ptr < len(full_sweeps) and full_sweeps[sw_ptr]["bar_idx"] <= i:
+            sw_ptr += 1
+        cached_sweeps = full_sweeps[:sw_ptr]
 
-            # If the most recent BOS changed, rebuild FVG list from scratch
-            new_bos_idx = new_last_bos["bar_idx"] if new_last_bos else -1
-            if new_bos_idx != prev_bos_bar_idx:
-                cached_fvg_list  = detect_fvg(past, min_size=config.FVG_MIN_SIZE)
-                cached_fvg_end   = 0
-                prev_bos_bar_idx = new_bos_idx
-
-            cached_last_bos  = new_last_bos
-            cached_sweeps    = sweeps
-            sig_recompute_at = i + config.SWING_N_LTF
-
-        # ── Step 3: fast-exit checks (cheap) ─────────────────────────────────
+        # ── Step 3: fast-exit checks ──────────────────────────────────────────
         if cached_last_bos is None:
             continue
 
-        # HTF bias — re-check every H1 bar (≈ every 4 M15 bars)
-        if i >= h1_bias_recheck_at:
-            past_h1 = h1_df[h1_df.index < bar_time]
-            if len(past_h1) >= config.SWING_N_HTF * 2 + 5:
-                h1_bias_cache = get_htf_bias(past_h1, bar_time, n=config.SWING_N_HTF)
-            h1_bias_recheck_at = i + 4   # re-check every ~4 bars (≈ 1 H1 candle)
+        # FVG: rebuild only when active BOS changes (cheap — happens ~20-30×)
+        new_bos_idx = cached_last_bos["bar_idx"]
+        if new_bos_idx != prev_bos_bar_idx:
+            cached_fvg_list  = detect_fvg(m15_df.iloc[:i], min_size=config.FVG_MIN_SIZE)
+            cached_fvg_end   = 0
+            prev_bos_bar_idx = new_bos_idx
+
+        # HTF bias — advance H1 BOS pointer (O(1) amortised)
+        while h1_ptr < len(h1_bos) and h1_bos[h1_ptr]["timestamp"] < bar_time:
+            h1_ptr += 1
+        h1_bias_cache = h1_bos[h1_ptr - 1]["direction"] if h1_ptr > 0 else "none"
 
         if h1_bias_cache == "none":
             continue
@@ -155,7 +160,6 @@ def run_backtest(
             continue
 
         # ── Step 4: FVG — incremental mitigation ─────────────────────────────
-        # Only iterate bars we haven't checked yet
         for j in range(cached_fvg_end, i):
             c = m15_df.iloc[j]
             update_mitigation(cached_fvg_list, c["high"], c["low"])
