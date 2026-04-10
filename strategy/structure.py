@@ -85,23 +85,36 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
 
         # Check bullish BOS: close above last swing high
         if last_sh_price is not None and closes[i] > last_sh_price:
-            # TP  = broken swing high
+            # Impulse leg for bullish BOS:
+            #   High = the swing high that was broken
+            #   Low  = the most recent confirmed swing low BEFORE the broken SH
+            #          (this is the origin of the impulse leg — where Smart Money
+            #           pushed price up from). If none, use the absolute low
+            #           between the SH and BOS bar.
             impulse_high   = float(highs[last_sh_bar])
             swing_high_bar = last_sh_bar
-            # SL  = lowest confirmed fractal SL in last 100 bars (origin of bull leg)
-            win_start = max(0, i - 100)
+
+            # Find the most recent swing low that occurred BEFORE the broken SH
             best_sl_price, best_sl_bar = None, None
-            for j in range(win_start, i):
-                if swing_l[j] and (best_sl_price is None or lows[j] < best_sl_price):
+            for j in range(last_sh_bar - 1, -1, -1):
+                if swing_l[j]:
                     best_sl_price = lows[j]
                     best_sl_bar   = j
+                    break
+
             if best_sl_bar is not None:
-                seg           = lows[best_sl_bar:i + 1]
+                # Use the actual lowest point between that swing low and the SH
+                # (the impulse may have dipped lower between fractal pivots)
+                seg           = lows[best_sl_bar:last_sh_bar + 1]
                 impulse_low   = float(seg.min())
                 swing_low_bar = best_sl_bar + int(seg.argmin())
             else:
-                impulse_low   = closes[i] * 0.99
-                swing_low_bar = i
+                # Fallback: lowest low in the 50 bars before the SH
+                seg_start     = max(0, last_sh_bar - 50)
+                seg           = lows[seg_start:last_sh_bar + 1]
+                impulse_low   = float(seg.min())
+                swing_low_bar = seg_start + int(seg.argmin())
+
             events.append({
                 "bar_idx":        i,
                 "timestamp":      idx[i],
@@ -119,24 +132,33 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
 
         # Check bearish BOS: close below last swing low
         elif last_sl_price is not None and closes[i] < last_sl_price:
-            # SL  = highest confirmed fractal SH in last 100 bars (origin of bear leg)
-            win_start = max(0, i - 100)
+            # Impulse leg for bearish BOS:
+            #   Low  = the swing low that was broken
+            #   High = the most recent confirmed swing high BEFORE the broken SL
+            #          (origin of the bearish impulse — where Smart Money sold from)
+            impulse_low    = float(lows[last_sl_bar])
+            swing_low_bar  = last_sl_bar
+
+            # Find the most recent swing high that occurred BEFORE the broken SL
             best_sh_price, best_sh_bar = None, None
-            for j in range(win_start, i):
-                if swing_h[j] and (best_sh_price is None or highs[j] > best_sh_price):
+            for j in range(last_sl_bar - 1, -1, -1):
+                if swing_h[j]:
                     best_sh_price = highs[j]
                     best_sh_bar   = j
+                    break
+
             if best_sh_bar is not None:
-                impulse_high   = float(best_sh_price)
-                swing_high_bar = best_sh_bar
+                # Use the actual highest point between that swing high and the SL
+                seg            = highs[best_sh_bar:last_sl_bar + 1]
+                impulse_high   = float(seg.max())
+                swing_high_bar = best_sh_bar + int(seg.argmax())
             else:
-                impulse_high   = closes[i] * 1.01
-                swing_high_bar = i
-            # TP  = lowest low from swing_high_bar to BOS bar
-            seg_start     = best_sh_bar if best_sh_bar is not None else win_start
-            seg_l         = lows[seg_start:i + 1]
-            impulse_low   = float(seg_l.min())
-            swing_low_bar = seg_start + int(seg_l.argmin())
+                # Fallback: highest high in the 50 bars before the SL
+                seg_start      = max(0, last_sl_bar - 50)
+                seg            = highs[seg_start:last_sl_bar + 1]
+                impulse_high   = float(seg.max())
+                swing_high_bar = seg_start + int(seg.argmax())
+
             events.append({
                 "bar_idx":        i,
                 "timestamp":      idx[i],

@@ -27,6 +27,13 @@ LIQ_TOLERANCE = 0.05   # % tolerance for two swing highs/lows to count as "equal
 # Price must come within this buffer of the 75% Fib level to trigger entry
 ENTRY_BUFFER = 0.0005
 
+# Minimum fib span in price units — filters out micro-swings
+# EURUSD: 0.0020 = 20 pips minimum impulse leg
+MIN_FIB_SPAN = 0.0020
+
+# Cooldown: minimum bars between entries on the same BOS setup
+ENTRY_COOLDOWN_BARS = 20
+
 # ── Symbols ──────────────────────────────────────────────────────────────────
 # Pip sizes per symbol (used for position sizing)
 PIP_SIZE = {
