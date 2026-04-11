@@ -16,7 +16,12 @@ import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="Scan Mode", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="Scan Mode", layout="wide", page_icon="🔍",
+                   initial_sidebar_state="collapsed")
+
+from web.mobile_css import inject_mobile_css
+inject_mobile_css()
+
 st.title("🔍 Scan Mode")
 
 import config

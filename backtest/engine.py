@@ -45,12 +45,21 @@ def run_backtest(
     h1_df:  pd.DataFrame,
     symbol: str,
     risk_per_trade: float = config.RISK_PER_TRADE,
+    compound: bool = False,
+    initial_capital: float = config.INITIAL_CAPITAL,
+    risk_pct: float = 0.5,
 ) -> list[Trade]:
     """
     Walk-forward bar-by-bar backtest.  Returns list of completed Trade objects.
+
+    Risk modes:
+      compound=False  → fixed `risk_per_trade` USD per trade (default $500)
+      compound=True   → risk = risk_pct% of current equity (initial + cumulative pnl)
+                        e.g. 0.5% of $100k = $500, grows to $750 if equity = $150k
     """
     pip_size  = config.PIP_SIZE.get(symbol, 0.0001)
     pip_value = config.PIP_VALUE_PER_LOT.get(symbol, 10.0)
+    cumulative_pnl = 0.0  # tracked for compound mode
 
     all_trades: list[Trade] = []
     open_trade: Optional[Trade] = None
@@ -109,10 +118,12 @@ def run_backtest(
             if hit_tp:
                 open_trade.close(open_trade.tp_price, bar_time, pip_value, pip_size)
                 all_trades.append(open_trade)
+                cumulative_pnl += open_trade.pnl_usd
                 open_trade = None
             elif hit_sl:
                 open_trade.close(open_trade.sl_price, bar_time, pip_value, pip_size)
                 all_trades.append(open_trade)
+                cumulative_pnl += open_trade.pnl_usd
                 open_trade = None
 
             if open_trade is not None:
@@ -182,7 +193,12 @@ def run_backtest(
                 continue
 
         # ── All conditions met → open trade ──────────────────────────────────
-        lot = calculate_lot_size(risk_per_trade, fib.sl_distance, symbol)
+        if compound:
+            current_equity = initial_capital + cumulative_pnl
+            current_risk   = max(current_equity * risk_pct / 100.0, 1.0)
+        else:
+            current_risk = risk_per_trade
+        lot = calculate_lot_size(current_risk, fib.sl_distance, symbol)
         if lot <= 0:
             continue
 
@@ -200,7 +216,7 @@ def run_backtest(
             tp_price    = fib.tp,
             entry_time  = bar_time,
             lot_size    = lot,
-            risk_usd    = risk_per_trade,
+            risk_usd    = current_risk,
             impulse_high      = cached_last_bos["swing_high"],
             impulse_low       = cached_last_bos["swing_low"],
             impulse_high_time = sh_time,

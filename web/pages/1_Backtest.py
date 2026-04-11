@@ -13,7 +13,12 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Backtest", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="Backtest", layout="wide", page_icon="🔬",
+                   initial_sidebar_state="collapsed")
+
+from web.mobile_css import inject_mobile_css
+inject_mobile_css()
+
 st.title("🔬 Run Backtest")
 
 import config
@@ -23,13 +28,19 @@ from backtest.results import compute_stats, equity_curve
 
 
 @st.cache_data(show_spinner=False)
-def _cached_backtest(symbol, date_from_str, date_to_str, risk_trade):
+def _cached_backtest(symbol, date_from_str, date_to_str, risk_trade, capital, compound, risk_pct):
     """Cache backtest results — same params = instant re-run."""
     m15 = get_ohlcv(symbol, "M15", date_from_str, date_to_str)
     h1  = get_ohlcv(symbol, "H1",  date_from_str, date_to_str)
     if m15 is None or len(m15) < 50:
         return None, None, None
-    trades = _run_backtest(m15, h1, symbol, risk_per_trade=risk_trade)
+    trades = _run_backtest(
+        m15, h1, symbol,
+        risk_per_trade=risk_trade,
+        compound=compound,
+        initial_capital=capital,
+        risk_pct=risk_pct,
+    )
     return trades, m15, h1
 
 # ── Sidebar — inputs ──────────────────────────────────────────────────────────
@@ -42,15 +53,27 @@ with st.sidebar:
     date_to    = st.date_input("עד תאריך", value=default_to)
     capital    = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
                                  step=1000, min_value=1000)
-    risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,
-                                 step=50, min_value=50)
+
+    compound   = st.checkbox("📈 ריבית דריבית (compound)",
+                             value=False,
+                             help="סיכון = % מההון הנוכחי. ככל שהתיק גדל, גם הסיכון גדל.")
+    if compound:
+        risk_pct = st.number_input("סיכון לעסקה (%)", value=0.5,
+                                   step=0.1, min_value=0.1, max_value=10.0,
+                                   format="%.2f")
+        risk_trade = config.RISK_PER_TRADE  # ignored
+    else:
+        risk_pct = 0.5  # ignored
+        risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,
+                                     step=50, min_value=50)
+
     run_btn    = st.button("▶  הרץ בקטסט", type="primary", use_container_width=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if run_btn:
     with st.spinner(f"טוען נתונים ומריץ בקטסט על {symbol}… (עלול לקחת כמה דקות בפעם הראשונה)"):
         try:
-            trades, m15, h1 = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade)
+            trades, m15, h1 = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade, capital, compound, risk_pct)
             if trades is None:
                 st.error("לא מספיק נתוני M15. נסה טווח תאריכים רחב יותר.")
                 st.stop()
@@ -213,7 +236,7 @@ if closed:
     # Store m15 in session for charting
     if "bt_m15" not in st.session_state:
         # Re-fetch — already cached by st.cache_data so instant
-        _t, m15_chart, _h = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade)
+        _t, m15_chart, _h = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade, capital, compound, risk_pct)
         st.session_state["bt_m15"] = m15_chart
     else:
         m15_chart = st.session_state["bt_m15"]
