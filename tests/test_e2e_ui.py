@@ -259,6 +259,46 @@ def test_history_get_404(client):
     assert r.status_code == 404
 
 
+# ── Trade chart endpoint ─────────────────────────────────────────────────────
+
+def test_trade_chart_endpoint(client, cached_backtest_request):
+    """A finished run should be able to serve a per-trade candlestick window."""
+    r = client.post("/api/backtest", json=cached_backtest_request)
+    job_id = r.json()["job_id"]
+    status = _wait_for_job(client, job_id)
+    run_id = status["run_id"]
+
+    r = client.get(f"/api/trade-chart/{run_id}/0")
+    assert r.status_code == 200
+    d = r.json()
+    for k in ["candles", "markers", "entry", "sl", "tp",
+              "impulse_high", "impulse_low", "direction", "result"]:
+        assert k in d, f"missing key: {k}"
+    assert isinstance(d["candles"], list) and len(d["candles"]) > 0
+    # Each candle has OHLCV-shaped fields
+    c0 = d["candles"][0]
+    for k in ["time", "open", "high", "low", "close"]:
+        assert k in c0
+
+
+def test_trade_chart_out_of_range(client, cached_backtest_request):
+    r = client.post("/api/backtest", json=cached_backtest_request)
+    job_id = r.json()["job_id"]
+    _wait_for_job(client, job_id)
+    run_id = client.get(f"/api/backtest/{job_id}/status").json()["run_id"]
+    r = client.get(f"/api/trade-chart/{run_id}/999999")
+    assert r.status_code == 400
+
+
+# ── No-cache headers for static (so JS edits show up immediately) ────────────
+
+def test_static_no_cache_headers(client):
+    r = client.get("/static/app.js")
+    assert r.status_code == 200
+    cc = r.headers.get("cache-control", "")
+    assert "no-store" in cc or "no-cache" in cc, f"expected no-store, got: {cc}"
+
+
 # ── 5. Verify no Streamlit imports remain in web/api or web/static ──────────
 
 def test_no_streamlit_in_new_web_code():

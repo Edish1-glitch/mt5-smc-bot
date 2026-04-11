@@ -14,6 +14,7 @@ const API = {
   history:    (limit = 100) => fetch(`/api/history?limit=${limit}`).then(r => r.json()),
   historyGet: (id) => fetch(`/api/history/${id}`).then(r => r.json()),
   historyDel: (id) => fetch(`/api/history/${id}`, { method: "DELETE" }).then(r => r.json()),
+  tradeChart: (runId, idx) => fetch(`/api/trade-chart/${runId}/${idx}`).then(r => r.json()),
 };
 
 const STATE = {
@@ -405,10 +406,10 @@ function renderResults(main, result) {
   );
   main.appendChild(eqCard);
 
-  // Trade list
+  // Trade list — with internal scrolling, prevents overflowing the page
   const tradesCard = el("div", { class: "card" },
-    el("p", { class: "card-title" }, `כל ${result.trades.length} העסקאות`),
-    tradeList(result.trades, result),
+    el("p", { class: "card-title" }, `${result.trades.length} עסקאות`),
+    el("div", { class: "trade-list-scroll" }, tradeList(result.trades, result)),
   );
   main.appendChild(tradesCard);
 
@@ -503,38 +504,80 @@ function openTradeModal(trade, idx, result) {
     ),
     el("div", { class: "card" },
       el("p", { class: "card-title" }, "גרף ויזואלי"),
-      el("div", { id: "trade-chart", class: "trade-chart-container" }),
+      el("div", { id: "trade-chart", class: "trade-chart-container" },
+        el("div", { class: "chart-loading" }, "טוען נרות…"),
+      ),
     ),
   );
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  setTimeout(() => renderTradeChart(trade), 100);
+  // Fetch real OHLC data and render proper candles
+  fetchAndRenderTradeChart(result.run_id, idx);
 }
 
-function renderTradeChart(trade) {
-  // Without per-trade OHLC data, render a minimal price-line chart between key levels.
-  // (A full candlestick view would require an extra endpoint with the surrounding bars.)
+async function fetchAndRenderTradeChart(runId, idx) {
+  if (!runId) {
+    $("#trade-chart").innerHTML = `<div class="chart-loading">לא ניתן לטעון גרף — אין run_id</div>`;
+    return;
+  }
+  try {
+    const data = await API.tradeChart(runId, idx);
+    renderTradeCandleChart(data);
+  } catch (e) {
+    $("#trade-chart").innerHTML = `<div class="chart-loading">שגיאה בטעינת הגרף: ${e.message || e}</div>`;
+  }
+}
+
+function renderTradeCandleChart(d) {
   const container = $("#trade-chart");
   if (!container) return;
   container.innerHTML = "";
+  if (!d.candles || !d.candles.length) {
+    container.innerHTML = `<div class="chart-loading">אין נתוני נרות זמינים</div>`;
+    return;
+  }
   const chart = LightweightCharts.createChart(container, {
     autoSize: true,
-    layout: { background: { color: "#0e1118" }, textColor: "#8a92a6" },
+    layout: { background: { color: "#0e1118" }, textColor: "#8a92a6", fontSize: 11 },
     grid: { vertLines: { color: "rgba(38,45,61,0.4)" }, horzLines: { color: "rgba(38,45,61,0.4)" } },
-    rightPriceScale: { borderColor: "#262d3d" },
-    timeScale: { borderColor: "#262d3d", timeVisible: true },
+    rightPriceScale: { borderColor: "#262d3d", scaleMargins: { top: 0.1, bottom: 0.1 } },
+    timeScale: { borderColor: "#262d3d", timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
-  const series = chart.addLineSeries({ lineColor: "#00c2d6", lineWidth: 2 });
-  const t1 = Math.floor(new Date(trade.entry_time).getTime() / 1000);
-  const t2 = trade.exit_time ? Math.floor(new Date(trade.exit_time).getTime() / 1000) : t1 + 3600;
-  series.setData([
-    { time: t1, value: trade.entry_price },
-    { time: t2, value: trade.exit_price ?? trade.tp_price },
-  ]);
-  series.createPriceLine({ price: trade.entry_price, color: "#f0b429", lineWidth: 2, axisLabelVisible: true, title: "Entry" });
-  series.createPriceLine({ price: trade.sl_price,    color: "#ef5350", lineWidth: 2, axisLabelVisible: true, title: "SL" });
-  series.createPriceLine({ price: trade.tp_price,    color: "#26a69a", lineWidth: 2, axisLabelVisible: true, title: "TP" });
+  const series = chart.addCandlestickSeries({
+    upColor:         "#26a69a",
+    downColor:       "#ef5350",
+    borderUpColor:   "#26a69a",
+    borderDownColor: "#ef5350",
+    wickUpColor:     "#26a69a",
+    wickDownColor:   "#ef5350",
+    priceFormat:     { type: "price", precision: 5, minMove: 0.00001 },
+  });
+  series.setData(d.candles);
+
+  // Fib levels as horizontal price lines
+  series.createPriceLine({ price: d.entry, color: "#f0b429", lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: "Entry 75%" });
+  series.createPriceLine({ price: d.sl,    color: "#ef5350", lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "SL 100%" });
+  series.createPriceLine({ price: d.tp,    color: "#26a69a", lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "TP" });
+
+  // 50% level
+  if (d.impulse_high && d.impulse_low) {
+    const mid = (d.impulse_high + d.impulse_low) / 2;
+    series.createPriceLine({ price: mid, color: "rgba(255,255,255,0.3)", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: "50%" });
+  }
+
+  // Markers (entry/exit arrows + impulse swing dots)
+  const markers = [...(d.markers || [])];
+  if (d.impulse_high_ts) {
+    markers.push({ time: d.impulse_high_ts, position: "aboveBar", color: "#ff9800", shape: "circle", text: `SH ${d.impulse_high.toFixed(5)}` });
+  }
+  if (d.impulse_low_ts) {
+    markers.push({ time: d.impulse_low_ts, position: "belowBar", color: "#ff9800", shape: "circle", text: `SL ${d.impulse_low.toFixed(5)}` });
+  }
+  markers.sort((a, b) => a.time - b.time);
+  if (markers.length) series.setMarkers(markers);
+
   chart.timeScale().fitContent();
 }
 

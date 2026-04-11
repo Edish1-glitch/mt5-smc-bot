@@ -336,14 +336,48 @@ button.btn-secondary {
   border-radius: 12px;
   border: 1px solid var(--border);
   margin-top: 8px;
+  position: relative;
 }
-.trade-chart-container { height: 360px; }
+.trade-chart-container { height: 380px; }
+.chart-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-mute);
+  font-size: 13px;
+}
 
 /* ── Trade list ──────────────────────────────────────────── */
+.trade-list-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 10px;
+  /* Subtle inner shadow to hint at scrollability */
+  background:
+    linear-gradient(var(--bg-card) 30%, rgba(28,34,48,0)),
+    linear-gradient(rgba(28,34,48,0), var(--bg-card) 70%) 0 100%,
+    radial-gradient(farthest-side at 50% 0, rgba(0,0,0,0.4), rgba(0,0,0,0)),
+    radial-gradient(farthest-side at 50% 100%, rgba(0,0,0,0.4), rgba(0,0,0,0)) 0 100%;
+  background-repeat: no-repeat;
+  background-size: 100% 24px, 100% 24px, 100% 8px, 100% 8px;
+  background-attachment: local, local, scroll, scroll;
+  padding: 4px 4px 4px 0;
+}
+.trade-list-scroll::-webkit-scrollbar { width: 6px; }
+.trade-list-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 100px;
+}
+.trade-list-scroll::-webkit-scrollbar-track { background: transparent; }
+
 .trade-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 4px;
 }
 .trade-row {
   display: grid;

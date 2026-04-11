@@ -37,6 +37,18 @@ from web.api import jobs
 app = FastAPI(title="SMC Backtest API", version="1.0")
 
 
+# ── No-cache middleware for static assets (avoids stale JS during development) ─
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/") or path.endswith(".js") or path.endswith(".css") or path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"]        = "no-cache"
+        response.headers["Expires"]       = "0"
+    return response
+
+
 # ── Static frontend ──────────────────────────────────────────────────────────
 STATIC_DIR = Path(__file__).parent.parent / "static"
 if STATIC_DIR.exists():
@@ -336,3 +348,95 @@ def api_history_delete(run_id: str):
     history.remove(run_id)
     results_cache.delete(run_id)
     return {"deleted": run_id}
+
+
+# ── Trade chart endpoint ─────────────────────────────────────────────────────
+
+@app.get("/api/trade-chart/{run_id}/{trade_idx}")
+def api_trade_chart(run_id: str, trade_idx: int, context: int = 80):
+    """Return OHLC bars surrounding a specific trade plus the fib level data
+    needed to render a candlestick chart with markers."""
+    import pandas as pd
+    rec = history.find(run_id)
+    if rec is None:
+        raise HTTPException(404, "run not found")
+    trades = results_cache.get_by_id(run_id)
+    if trades is None:
+        raise HTTPException(404, "trades not in cache")
+    if trade_idx < 0 or trade_idx >= len(trades):
+        raise HTTPException(400, "trade index out of range")
+
+    t = trades[trade_idx]
+    # Pull OHLCV (cached on disk by parquet)
+    m15 = get_ohlcv(rec["symbol"], "M15", rec["date_from"], rec["date_to"])
+    if m15 is None or len(m15) == 0:
+        raise HTTPException(500, "could not load OHLCV data")
+
+    # Find entry/exit indices in the dataframe
+    entry_loc = m15.index.searchsorted(t.entry_time)
+    if t.exit_time is not None:
+        exit_loc = m15.index.searchsorted(t.exit_time) + 5
+    else:
+        exit_loc = min(entry_loc + 100, len(m15))
+
+    # Extend window left to include impulse swing candles
+    impulse_start = entry_loc
+    if t.impulse_high_time is not None:
+        sh_loc = m15.index.searchsorted(t.impulse_high_time)
+        impulse_start = min(impulse_start, int(sh_loc))
+    if t.impulse_low_time is not None:
+        sl_loc = m15.index.searchsorted(t.impulse_low_time)
+        impulse_start = min(impulse_start, int(sl_loc))
+
+    start = max(0, min(int(entry_loc) - context, impulse_start - 10))
+    end   = min(len(m15), int(exit_loc) + 5)
+    window = m15.iloc[start:end]
+
+    candles = []
+    for ts, row in window.iterrows():
+        candles.append({
+            "time":  int(ts.timestamp()),
+            "open":  round(float(row["open"]),  5),
+            "high":  round(float(row["high"]),  5),
+            "low":   round(float(row["low"]),   5),
+            "close": round(float(row["close"]), 5),
+        })
+
+    markers = []
+    entry_unix = int(t.entry_time.timestamp())
+    if candles and entry_unix >= candles[0]["time"] and entry_unix <= candles[-1]["time"]:
+        markers.append({
+            "time":     entry_unix,
+            "position": "belowBar" if t.direction == "bull" else "aboveBar",
+            "color":    "#00bcd4",
+            "shape":    "arrowUp" if t.direction == "bull" else "arrowDown",
+            "text":     "ENTRY",
+        })
+    if t.exit_time is not None:
+        exit_unix = int(t.exit_time.timestamp())
+        exit_color = "#26a69a" if t.result == "win" else "#ef5350"
+        if candles and exit_unix >= candles[0]["time"] and exit_unix <= candles[-1]["time"]:
+            markers.append({
+                "time":     exit_unix,
+                "position": "aboveBar" if t.direction == "bull" else "belowBar",
+                "color":    exit_color,
+                "shape":    "arrowDown" if t.direction == "bull" else "arrowUp",
+                "text":     "EXIT ✓" if t.result == "win" else "EXIT ✗",
+            })
+
+    sh_ts = int(t.impulse_high_time.timestamp()) if t.impulse_high_time is not None else None
+    sl_ts = int(t.impulse_low_time.timestamp())  if t.impulse_low_time  is not None else None
+
+    return {
+        "candles":      candles,
+        "markers":      markers,
+        "entry":        round(float(t.entry_price), 5),
+        "sl":           round(float(t.sl_price),    5),
+        "tp":           round(float(t.tp_price),    5),
+        "impulse_high": round(float(t.impulse_high), 5),
+        "impulse_low":  round(float(t.impulse_low),  5),
+        "impulse_high_ts": sh_ts,
+        "impulse_low_ts":  sl_ts,
+        "direction":    t.direction,
+        "result":       t.result,
+    }
