@@ -54,7 +54,7 @@ def run_backtest(
 
     all_trades: list[Trade] = []
     open_trade: Optional[Trade] = None
-    _traded_setups: set = set()   # tracks (entry, sl) pairs to prevent duplicate entries
+    _traded_bos: set = set()   # tracks BOS bar_idx values to prevent duplicate entries on same BOS
 
     min_bars = config.SWING_N_LTF * 2 + 10
     total    = len(m15_df) - min_bars
@@ -158,18 +158,17 @@ def run_backtest(
             impulse_high = cached_last_bos["swing_high"],
         )
 
-        # Filter: minimum impulse leg size (skip micro-swings)
-        if fib.impulse_high - fib.impulse_low < config.MIN_FIB_SPAN:
+        # Filter: minimum impulse leg size (skip micro-swings) — per-symbol
+        if fib.impulse_high - fib.impulse_low < config.get_min_fib_span(symbol):
             continue
 
-        if not price_at_entry_zone(bar["close"], fib, config.ENTRY_BUFFER):
+        if not price_at_entry_zone(bar["close"], fib, config.get_entry_buffer(symbol)):
             continue
 
-        # Duplicate filter: skip if same BOS setup (same entry+SL) was already traded
-        bos_key = (round(fib.entry, 5), round(fib.sl, 5))
-        if bos_key in _traded_setups:
+        # Duplicate filter: each BOS event can only generate one trade
+        if cached_last_bos["bar_idx"] in _traded_bos:
             continue
-        _traded_setups.add(bos_key)
+        _traded_bos.add(cached_last_bos["bar_idx"])
 
         # ── Step 4: FVG — incremental mitigation ─────────────────────────────
         if config.REQUIRE_FVG:

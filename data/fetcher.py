@@ -25,6 +25,7 @@ import platform
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 CACHE_DIR = Path(__file__).parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -339,7 +340,16 @@ _DUKA_POINT = {
     "EURGBP": 100_000, "EURJPY": 1_000,   "GBPJPY": 1_000,
     "USDJPY": 1_000,
     "XAUUSD": 1_000,   "XAGUSD": 1_000,
-    "NAS100": 10,      "US500":  10,       "US30": 1,
+    "NAS100": 1_000,   "US500":  1_000,    "US30": 1_000,
+}
+
+# Mapping from MT5-style symbol → Dukascopy symbol path (for indices/CFDs)
+_DUKA_SYMBOL = {
+    "NAS100": "USATECHIDXUSD",   # Nasdaq 100 CFD
+    "US500":  "USA500IDXUSD",    # S&P 500 CFD
+    "US30":   "USA30IDXUSD",     # Dow Jones CFD
+    "GER40":  "DEUIDXEUR",       # DAX CFD
+    "UK100":  "GBRIDXGBP",       # FTSE 100 CFD
 }
 
 # Resample 1-min candles → target timeframe
@@ -349,86 +359,144 @@ _DUKA_RESAMPLE = {
 }
 
 
+_DUKA_DAILY_CACHE = CACHE_DIR / "duka_daily"
+_DUKA_DAILY_CACHE.mkdir(exist_ok=True)
+
+_DUKA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36"
+}
+
+
+def _fetch_dukascopy_day(duka_sym: str, day: datetime, mult: int, retries: int = 3) -> Optional[pd.DataFrame]:
+    """
+    Fetch a single day of 1-minute Dukascopy bars.
+    Caches per-day to avoid re-downloads. Returns None if no data for that day.
+    Retries failed requests; only caches "real" empty days (weekends/holidays).
+    """
+    import lzma, struct, requests, time
+
+    cache_file = _DUKA_DAILY_CACHE / f"{duka_sym}_{day.strftime('%Y%m%d')}.parquet"
+    if cache_file.exists():
+        try:
+            df = pd.read_parquet(cache_file)
+            return df if len(df) > 0 else None
+        except Exception:
+            cache_file.unlink(missing_ok=True)
+
+    # Dukascopy months are 0-indexed (Jan=00)
+    url = (
+        f"https://datafeed.dukascopy.com/datafeed/{duka_sym}/"
+        f"{day.year}/{day.month - 1:02d}/{day.day:02d}"
+        f"/BID_candles_min_1.bi5"
+    )
+
+    last_status = None
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, headers=_DUKA_HEADERS, timeout=20)
+            last_status = resp.status_code
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+            continue
+
+        if resp.status_code == 200:
+            if not resp.content:
+                # Real empty response = weekend/holiday → cache as empty marker
+                pd.DataFrame(columns=["open", "high", "low", "close", "volume"]).to_parquet(cache_file)
+                return None
+            break  # success → process below
+        elif resp.status_code == 404:
+            # 404 = day not in feed → cache as empty marker
+            pd.DataFrame(columns=["open", "high", "low", "close", "volume"]).to_parquet(cache_file)
+            return None
+        else:
+            # 429/503/etc → backoff and retry
+            time.sleep(1.0 * (attempt + 1))
+    else:
+        # All retries exhausted → don't cache, will retry on next run
+        return None
+
+    try:
+        raw = lzma.decompress(resp.content)
+    except Exception:
+        return None
+
+    fmt = ">IIIIIf"
+    sz  = struct.calcsize(fmt)
+    recs = []
+    for i in range(0, len(raw) - sz + 1, sz):
+        ts_ms, op, hi, lo, cl, vol = struct.unpack_from(fmt, raw, i)
+        ts = day + timedelta(seconds=int(ts_ms))
+        recs.append((ts, op / mult, hi / mult, lo / mult, cl / mult, vol))
+
+    if not recs:
+        pd.DataFrame(columns=["open", "high", "low", "close", "volume"]).to_parquet(cache_file)
+        return None
+
+    df_day = pd.DataFrame(recs, columns=["time", "open", "high", "low", "close", "volume"])
+    df_day["time"] = pd.DatetimeIndex(pd.to_datetime(df_day["time"], utc=True))
+    df_day = df_day.set_index("time")
+    df_day.to_parquet(cache_file)
+    return df_day
+
+
 def _fetch_from_dukascopy(symbol, timeframe, date_from, date_to):
     """
     Download free OHLCV data from Dukascopy's public data feed.
 
     No API key required. Data is bank-quality, goes back 10+ years.
     Downloads 1-minute BID candles (bi5 format) then resamples.
+    Uses per-day caching + parallel downloads (30 workers).
 
     Supported: all major forex pairs + XAUUSD + indices.
     """
-    import lzma
-    import struct
-    import requests
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
 
     resample_rule = _DUKA_RESAMPLE.get(timeframe)
     if not resample_rule:
         raise ValueError(f"Unsupported timeframe for Dukascopy: {timeframe}")
 
     mult = _DUKA_POINT.get(symbol.upper(), 100_000)
+    duka_sym = _DUKA_SYMBOL.get(symbol.upper(), symbol.upper())
 
     dt_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
     dt_to   = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
 
-    frames = []
+    # Build day list
+    days = []
     current = dt_from.replace(hour=0, minute=0, second=0, microsecond=0)
-    total_days = (dt_to - dt_from).days
-    done = 0
-
     while current < dt_to:
-        # Dukascopy months are 0-indexed (Jan=00)
-        url = (
-            f"https://datafeed.dukascopy.com/datafeed/{symbol.upper()}/"
-            f"{current.year}/{current.month - 1:02d}/{current.day:02d}"
-            f"/BID_candles_min_1.bi5"
-        )
-
-        pct = done / max(total_days, 1) * 100
-        print(f"\r  [Dukascopy] {pct:4.0f}%  {current.date()}  bars: {sum(len(f) for f in frames):,}   ",
-              end="", flush=True)
-
-        _HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"}
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
-        except Exception:
-            current += timedelta(days=1)
-            done += 1
-            continue
-
-        if resp.status_code == 200 and resp.content:
-            try:
-                raw = lzma.decompress(resp.content)
-            except Exception:
-                current += timedelta(days=1)
-                done += 1
-                continue
-
-            # Each record: 24 bytes = uint32 ts_ms, uint32 open, uint32 high,
-            #              uint32 low, uint32 close, float32 volume
-            fmt    = ">IIIIIf"
-            sz     = struct.calcsize(fmt)   # = 24
-            midnight = current
-            recs = []
-            for i in range(0, len(raw) - sz + 1, sz):
-                ts_ms, op, hi, lo, cl, vol = struct.unpack_from(fmt, raw, i)
-                ts = midnight + timedelta(seconds=int(ts_ms))
-                recs.append((ts, op / mult, hi / mult, lo / mult, cl / mult, vol))
-
-            if recs:
-                df_day = pd.DataFrame(
-                    recs, columns=["time", "open", "high", "low", "close", "volume"]
-                )
-                df_day["time"] = pd.DatetimeIndex(
-                    pd.to_datetime(df_day["time"], utc=True)
-                )
-                df_day = df_day.set_index("time")
-                frames.append(df_day)
-
+        days.append(current)
         current += timedelta(days=1)
-        done += 1
+
+    total = len(days)
+    done = [0]
+    lock = threading.Lock()
+    frames: list[pd.DataFrame] = []
+
+    def _worker(day):
+        df = _fetch_dukascopy_day(duka_sym, day, mult)
+        with lock:
+            done[0] += 1
+            if done[0] % 20 == 0 or done[0] == total:
+                pct = done[0] / total * 100
+                bars = sum(len(f) for f in frames)
+                print(f"\r  [Dukascopy] {pct:4.0f}%  ({done[0]}/{total} days)  bars: {bars:,}   ",
+                      end="", flush=True)
+        return df
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(_worker, d) for d in days]
+        for fut in as_completed(futures):
+            try:
+                df = fut.result()
+                if df is not None and len(df) > 0:
+                    frames.append(df)
+            except Exception:
+                pass
 
     print()  # newline after progress bar
 

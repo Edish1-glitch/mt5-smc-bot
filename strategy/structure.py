@@ -86,9 +86,9 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
         # Check bullish BOS: close above last swing high
         if last_sh_price is not None and closes[i] > last_sh_price:
             # Impulse leg for bullish BOS:
-            #   The FULL leg from the lowest low to the highest high,
-            #   measured from the most recent swing low BEFORE the broken SH
-            #   all the way to the BOS bar (including the breakout candle).
+            #   Origin (low) = the swing low fractal pivot just before the impulse
+            #   Top   (high) = the broken swing high, but extended to the BOS bar's
+            #                  highest high if the breakout candle pushed even higher.
 
             # Find the most recent swing low before the broken SH (impulse origin)
             leg_start = None
@@ -99,15 +99,15 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
             if leg_start is None:
                 leg_start = max(0, last_sh_bar - 50)
 
-            # impulse_low = lowest low from leg start to BOS bar
-            seg_low       = lows[leg_start:i + 1]
-            impulse_low   = float(seg_low.min())
-            swing_low_bar = leg_start + int(seg_low.argmin())
+            # impulse_low = the actual fractal swing low (anchor point)
+            impulse_low   = float(lows[leg_start])
+            swing_low_bar = leg_start
 
-            # impulse_high = highest high from leg start to BOS bar
-            seg_high       = highs[leg_start:i + 1]
+            # impulse_high = the broken swing high, extended if BOS candle went higher.
+            # Search from the swing high bar to the BOS bar inclusive.
+            seg_high       = highs[last_sh_bar:i + 1]
             impulse_high   = float(seg_high.max())
-            swing_high_bar = leg_start + int(seg_high.argmax())
+            swing_high_bar = last_sh_bar + int(seg_high.argmax())
 
             events.append({
                 "bar_idx":        i,
@@ -127,9 +127,9 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
         # Check bearish BOS: close below last swing low
         elif last_sl_price is not None and closes[i] < last_sl_price:
             # Impulse leg for bearish BOS:
-            #   The FULL leg from the highest high to the lowest low,
-            #   measured from the most recent swing high BEFORE the broken SL
-            #   all the way to the BOS bar (including the breakout candle).
+            #   Origin (high) = the swing high fractal pivot just before the impulse
+            #   Bottom (low)  = the broken swing low, extended to the BOS bar's
+            #                   lowest low if the breakout candle pushed lower.
 
             # Find the most recent swing high before the broken SL (impulse origin)
             leg_start = None
@@ -140,15 +140,15 @@ def detect_bos(df: pd.DataFrame, n: int = 5) -> list[dict]:
             if leg_start is None:
                 leg_start = max(0, last_sl_bar - 50)
 
-            # impulse_high = highest high from leg start to BOS bar
-            seg_high       = highs[leg_start:i + 1]
-            impulse_high   = float(seg_high.max())
-            swing_high_bar = leg_start + int(seg_high.argmax())
+            # impulse_high = the actual fractal swing high (anchor point)
+            impulse_high   = float(highs[leg_start])
+            swing_high_bar = leg_start
 
-            # impulse_low = lowest low from leg start to BOS bar
-            seg_low       = lows[leg_start:i + 1]
+            # impulse_low = the broken swing low, extended if BOS candle went lower.
+            # Search from the swing low bar to the BOS bar inclusive.
+            seg_low       = lows[last_sl_bar:i + 1]
             impulse_low   = float(seg_low.min())
-            swing_low_bar = leg_start + int(seg_low.argmin())
+            swing_low_bar = last_sl_bar + int(seg_low.argmin())
 
             events.append({
                 "bar_idx":        i,
