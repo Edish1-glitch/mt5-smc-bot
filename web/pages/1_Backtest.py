@@ -26,6 +26,7 @@ import config
 from data.fetcher import get_ohlcv
 from backtest.engine import run_backtest as _run_backtest
 from backtest.results import compute_stats, equity_curve
+from backtest import results_cache
 
 
 @st.cache_data(show_spinner=False)
@@ -37,6 +38,24 @@ def _cached_data(symbol, date_from_str, date_to_str):
 
 
 def _run_with_progress(symbol, date_from_str, date_to_str, risk_trade, capital, compound, risk_pct, progress_cb):
+    # Try persistent disk cache first — instant return on repeat runs
+    cached_trades = results_cache.get(
+        symbol, date_from_str, date_to_str,
+        risk_per_trade=risk_trade,
+        compound=compound,
+        initial_capital=capital,
+        risk_pct=risk_pct,
+    )
+    if cached_trades is not None:
+        m15, h1 = _cached_data(symbol, date_from_str, date_to_str)
+        if progress_cb is not None:
+            try:
+                progress_cb(1.0, len(cached_trades), 0)
+            except Exception:
+                pass
+        return cached_trades, m15, h1
+
+    # Cache miss — run the engine
     m15, h1 = _cached_data(symbol, date_from_str, date_to_str)
     if m15 is None or len(m15) < 50:
         return None, None, None
@@ -47,6 +66,14 @@ def _run_with_progress(symbol, date_from_str, date_to_str, risk_trade, capital, 
         initial_capital=capital,
         risk_pct=risk_pct,
         progress_callback=progress_cb,
+    )
+    # Save to disk cache for next time
+    results_cache.put(
+        symbol, date_from_str, date_to_str, trades,
+        risk_per_trade=risk_trade,
+        compound=compound,
+        initial_capital=capital,
+        risk_pct=risk_pct,
     )
     return trades, m15, h1
 
@@ -84,8 +111,14 @@ with st.expander("⚙️ הגדרות בקטסט", expanded=True):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if run_btn:
+    # Quick check: do we have a cached result? Show different UI if yes
+    from backtest import results_cache as _rc
+    _has_cache = _rc.get(symbol, str(date_from), str(date_to),
+                          risk_per_trade=risk_trade, compound=compound,
+                          initial_capital=capital, risk_pct=risk_pct) is not None
+
     status_box = st.empty()
-    progress_bar = st.progress(0.0, text="טוען נתונים…")
+    progress_bar = st.progress(0.0, text="⚡ טוען מ-cache…" if _has_cache else "טוען נתונים…")
     info_text = st.empty()
 
     def _update_progress(frac, n_trades, eta_sec):
@@ -96,7 +129,10 @@ if run_btn:
             pass
 
     try:
-        status_box.info(f"📥 טוען נתונים עבור {symbol}…")
+        if _has_cache:
+            status_box.info(f"⚡ נטען מהcache — תוצאות מיידיות")
+        else:
+            status_box.info(f"📥 טוען נתונים עבור {symbol}…")
         trades, m15, h1 = _run_with_progress(
             symbol, str(date_from), str(date_to),
             risk_trade, capital, compound, risk_pct,
