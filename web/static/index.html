@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SMC Bot">
+  <meta name="theme-color" content="#0e1118">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <link rel="stylesheet" href="/static/styles.css">
+  <title>SMC Bot</title>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1 id="page-title">בקטסט</h1>
+      <button id="open-settings" class="hdr-btn" title="הגדרות">⚙️</button>
+    </header>
+
+    <main id="main-content">
+      <div id="loading" class="empty-state">טוען…</div>
+    </main>
+
+    <nav class="bottom-nav">
+      <a href="#/backtest" data-tab="backtest" class="nav-item">
+        <span class="ico">🔬</span>
+        <span class="lbl">בקטסט</span>
+      </a>
+      <a href="#/history" data-tab="history" class="nav-item">
+        <span class="ico">📚</span>
+        <span class="lbl">היסטוריה</span>
+      </a>
+      <a href="#/results" data-tab="results" class="nav-item">
+        <span class="ico">📊</span>
+        <span class="lbl">תוצאות</span>
+      </a>
+    </nav>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

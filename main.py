@@ -52,11 +52,17 @@ from backtest.results import compute_stats, print_stats
 
 def parse_args():
     p = argparse.ArgumentParser(description="SMC/ICT Strategy Backtester")
-    p.add_argument("--symbol", nargs="+", required=True,
+    p.add_argument("--serve", action="store_true",
+                   help="Boot the FastAPI web server (mobile-first dashboard)")
+    p.add_argument("--port", type=int, default=8000,
+                   help="Port for --serve (default: 8000)")
+    p.add_argument("--host", default="0.0.0.0",
+                   help="Host for --serve (default: 0.0.0.0)")
+    p.add_argument("--symbol", nargs="+",
                    help="MT5 symbol(s) to backtest (e.g. EURUSD XAUUSD)")
-    p.add_argument("--from",   dest="date_from", required=True,
+    p.add_argument("--from",   dest="date_from",
                    help="Start date YYYY-MM-DD")
-    p.add_argument("--to",     dest="date_to",   required=True,
+    p.add_argument("--to",     dest="date_to",
                    help="End date YYYY-MM-DD")
     p.add_argument("--source", default="auto",
                    choices=["auto", "mt5", "oanda", "yfinance", "bridge", "dukascopy"],
@@ -76,6 +82,18 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # ── Server mode: boot FastAPI ────────────────────────────────────────────
+    if args.serve:
+        import uvicorn
+        print(f"\n  🚀 Starting SMC Bot dashboard on http://{args.host}:{args.port}\n")
+        uvicorn.run("web.api.server:app", host=args.host, port=args.port, log_level="info")
+        return
+
+    if not args.symbol or not args.date_from or not args.date_to:
+        print("Error: --symbol, --from and --to are required (or use --serve)")
+        sys.exit(1)
+
     all_stats = {}
 
     # Show active source

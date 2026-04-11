@@ -38,6 +38,21 @@ def compute_stats(trades: list[Trade], initial_capital: float) -> dict:
 
     avg_rr = np.mean([t.risk_reward for t in closed])
 
+    # Average holding time per direction
+    def _hold_seconds(t):
+        if t.exit_time is None or t.entry_time is None:
+            return 0.0
+        try:
+            return (t.exit_time - t.entry_time).total_seconds()
+        except Exception:
+            return 0.0
+
+    longs_closed  = [t for t in closed if t.direction == "bull"]
+    shorts_closed = [t for t in closed if t.direction == "bear"]
+    avg_hold_long  = float(np.mean([_hold_seconds(t) for t in longs_closed]))  if longs_closed  else 0.0
+    avg_hold_short = float(np.mean([_hold_seconds(t) for t in shorts_closed])) if shorts_closed else 0.0
+    avg_hold_all   = float(np.mean([_hold_seconds(t) for t in closed]))         if closed        else 0.0
+
     # Equity curve and drawdown
     equity = [initial_capital]
     for t in closed:
@@ -65,6 +80,11 @@ def compute_stats(trades: list[Trade], initial_capital: float) -> dict:
         "max_dd_usd":      round(max_dd_usd, 2),
         "max_dd_pct":      round(max_dd_pct, 2),
         "final_equity":    round(equity[-1], 2),
+        "long_trades":     len(longs_closed),
+        "short_trades":    len(shorts_closed),
+        "avg_hold_long_sec":  round(avg_hold_long, 1),
+        "avg_hold_short_sec": round(avg_hold_short, 1),
+        "avg_hold_sec":       round(avg_hold_all, 1),
     }
 
 
