@@ -14,8 +14,9 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Compare", layout="wide", page_icon="📊",
                    initial_sidebar_state="collapsed")
 
-from web.mobile_css import inject_mobile_css
+from web.mobile_css import inject_mobile_css, inject_bottom_nav
 inject_mobile_css()
+inject_bottom_nav("compare")
 
 st.title("📊 Compare — השוואת סימבולים")
 
@@ -24,20 +25,25 @@ from data.fetcher import get_ohlcv
 from backtest.engine import run_backtest
 from backtest.results import compute_stats, equity_curve
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("הגדרות")
-    symbols    = st.multiselect("סימבולים", config.SYMBOLS,
-                                default=["EURUSD", "GBPUSD"])
+# ── Inputs (main area, mobile-friendly) ──────────────────────────────────────
+with st.expander("⚙️ הגדרות השוואה", expanded=True):
+    symbols = st.multiselect("סימבולים", config.SYMBOLS,
+                             default=["EURUSD", "GBPUSD"])
     default_to   = pd.Timestamp.today().normalize()
     default_from = default_to - pd.Timedelta(days=55)
-    date_from  = st.date_input("מתאריך", value=default_from)
-    date_to    = st.date_input("עד תאריך", value=default_to)
-    capital    = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
-                                 step=1000, min_value=1000)
-    risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,
-                                 step=50, min_value=50)
-    run_btn    = st.button("▶  הרץ השוואה", type="primary", use_container_width=True)
+    d1, d2 = st.columns(2)
+    with d1:
+        date_from = st.date_input("מתאריך", value=default_from)
+    with d2:
+        date_to = st.date_input("עד תאריך", value=default_to)
+    c1, c2 = st.columns(2)
+    with c1:
+        capital = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
+                                  step=1000, min_value=1000)
+    with c2:
+        risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,
+                                     step=50, min_value=50)
+    run_btn = st.button("▶  הרץ השוואה", type="primary", use_container_width=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if run_btn:

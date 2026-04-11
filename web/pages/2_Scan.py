@@ -19,8 +19,9 @@ import numpy as np
 st.set_page_config(page_title="Scan Mode", layout="wide", page_icon="🔍",
                    initial_sidebar_state="collapsed")
 
-from web.mobile_css import inject_mobile_css
+from web.mobile_css import inject_mobile_css, inject_bottom_nav
 inject_mobile_css()
+inject_bottom_nav("scan")
 
 st.title("🔍 Scan Mode")
 
@@ -335,24 +336,29 @@ window.addEventListener('resize', () => setTimeout(drawOverlays, 100));
 """
 
 
-# ── Sidebar — inputs ──────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("הגדרות סקאן")
-    symbol    = st.selectbox("סימבול", config.SYMBOLS, index=0)
+# ── Inputs (main area, mobile-friendly) ──────────────────────────────────────
+with st.expander("⚙️ הגדרות סקאן", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        symbol = st.selectbox("סימבול", config.SYMBOLS, index=0)
+    with c2:
+        max_setups = st.slider("מקס׳ סטאפים", 5, 100, 25)
     default_to   = pd.Timestamp.today().normalize()
     default_from = default_to - pd.Timedelta(days=55)
-    date_from = st.date_input("מתאריך", value=default_from)
-    date_to   = st.date_input("עד תאריך", value=default_to)
-    max_setups = st.slider("מקסימום סטאפים", 5, 100, 25)
-    scan_btn  = st.button("🔍 סרוק סטאפים", type="primary", use_container_width=True)
+    d1, d2 = st.columns(2)
+    with d1:
+        date_from = st.date_input("מתאריך", value=default_from)
+    with d2:
+        date_to = st.date_input("עד תאריך", value=default_to)
+    scan_btn = st.button("🔍 סרוק סטאפים", type="primary", use_container_width=True)
 
     if "scan_decisions" in st.session_state and st.session_state["scan_decisions"]:
-        st.markdown("---")
         decisions = st.session_state["scan_decisions"]
         taken  = sum(1 for d in decisions.values() if d == "y")
         skipped = sum(1 for d in decisions.values() if d == "n")
-        st.metric("נלקחו", taken)
-        st.metric("דולגו", skipped)
+        m1, m2 = st.columns(2)
+        m1.metric("נלקחו", taken)
+        m2.metric("דולגו", skipped)
 
 # ── Run scan ──────────────────────────────────────────────────────────────────
 if scan_btn:

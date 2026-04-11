@@ -16,8 +16,9 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Backtest", layout="wide", page_icon="🔬",
                    initial_sidebar_state="collapsed")
 
-from web.mobile_css import inject_mobile_css
+from web.mobile_css import inject_mobile_css, inject_bottom_nav
 inject_mobile_css()
+inject_bottom_nav("backtest")
 
 st.title("🔬 Run Backtest")
 
@@ -28,10 +29,15 @@ from backtest.results import compute_stats, equity_curve
 
 
 @st.cache_data(show_spinner=False)
-def _cached_backtest(symbol, date_from_str, date_to_str, risk_trade, capital, compound, risk_pct):
-    """Cache backtest results — same params = instant re-run."""
+def _cached_data(symbol, date_from_str, date_to_str):
+    """Cache OHLCV data only — backtest runs fresh for progress callback support."""
     m15 = get_ohlcv(symbol, "M15", date_from_str, date_to_str)
     h1  = get_ohlcv(symbol, "H1",  date_from_str, date_to_str)
+    return m15, h1
+
+
+def _run_with_progress(symbol, date_from_str, date_to_str, risk_trade, capital, compound, risk_pct, progress_cb):
+    m15, h1 = _cached_data(symbol, date_from_str, date_to_str)
     if m15 is None or len(m15) < 50:
         return None, None, None
     trades = _run_backtest(
@@ -40,23 +46,30 @@ def _cached_backtest(symbol, date_from_str, date_to_str, risk_trade, capital, co
         compound=compound,
         initial_capital=capital,
         risk_pct=risk_pct,
+        progress_callback=progress_cb,
     )
     return trades, m15, h1
 
-# ── Sidebar — inputs ──────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("הגדרות")
-    symbol     = st.selectbox("סימבול", config.SYMBOLS, index=0)
+# ── Inputs (main area, mobile-friendly) ──────────────────────────────────────
+with st.expander("⚙️ הגדרות בקטסט", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        symbol = st.selectbox("סימבול", config.SYMBOLS, index=0)
+    with c2:
+        capital = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
+                                  step=1000, min_value=1000)
+
     default_to   = pd.Timestamp.today().normalize()
     default_from = default_to - pd.Timedelta(days=730)
-    date_from  = st.date_input("מתאריך", value=default_from)
-    date_to    = st.date_input("עד תאריך", value=default_to)
-    capital    = st.number_input("הון התחלתי ($)", value=config.INITIAL_CAPITAL,
-                                 step=1000, min_value=1000)
+    d1, d2 = st.columns(2)
+    with d1:
+        date_from = st.date_input("מתאריך", value=default_from)
+    with d2:
+        date_to = st.date_input("עד תאריך", value=default_to)
 
-    compound   = st.checkbox("📈 ריבית דריבית (compound)",
-                             value=False,
-                             help="סיכון = % מההון הנוכחי. ככל שהתיק גדל, גם הסיכון גדל.")
+    compound = st.checkbox("📈 ריבית דריבית (compound)",
+                           value=False,
+                           help="סיכון = % מההון הנוכחי. ככל שהתיק גדל, גם הסיכון גדל.")
     if compound:
         risk_pct = st.number_input("סיכון לעסקה (%)", value=0.5,
                                    step=0.1, min_value=0.1, max_value=10.0,
@@ -67,31 +80,51 @@ with st.sidebar:
         risk_trade = st.number_input("סיכון לעסקה ($)", value=config.RISK_PER_TRADE,
                                      step=50, min_value=50)
 
-    run_btn    = st.button("▶  הרץ בקטסט", type="primary", use_container_width=True)
+    run_btn = st.button("▶  הרץ בקטסט", type="primary", use_container_width=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if run_btn:
-    with st.spinner(f"טוען נתונים ומריץ בקטסט על {symbol}… (עלול לקחת כמה דקות בפעם הראשונה)"):
-        try:
-            trades, m15, h1 = _cached_backtest(symbol, str(date_from), str(date_to), risk_trade, capital, compound, risk_pct)
-            if trades is None:
-                st.error("לא מספיק נתוני M15. נסה טווח תאריכים רחב יותר.")
-                st.stop()
-            stats  = compute_stats(trades, capital)
+    status_box = st.empty()
+    progress_bar = st.progress(0.0, text="טוען נתונים…")
+    info_text = st.empty()
 
-            st.session_state["bt_trades"]    = trades
-            st.session_state["bt_stats"]     = stats
-            st.session_state["bt_capital"]   = capital
-            st.session_state["bt_symbol"]    = symbol
-            st.session_state["bt_m15"]       = m15
-            st.session_state["bt_trade_idx"] = 0
-        except Exception as e:
-            st.error(f"שגיאה: {e}")
+    def _update_progress(frac, n_trades, eta_sec):
+        try:
+            txt = f"מריץ בקטסט… {int(frac*100)}%  •  {n_trades} עסקאות  •  עוד ~{int(eta_sec)} שניות"
+            progress_bar.progress(min(frac, 1.0), text=txt)
+        except Exception:
+            pass
+
+    try:
+        status_box.info(f"📥 טוען נתונים עבור {symbol}…")
+        trades, m15, h1 = _run_with_progress(
+            symbol, str(date_from), str(date_to),
+            risk_trade, capital, compound, risk_pct,
+            _update_progress,
+        )
+        progress_bar.progress(1.0, text="✅ הסתיים")
+        status_box.empty()
+        info_text.empty()
+        if trades is None:
+            st.error("לא מספיק נתוני M15. נסה טווח תאריכים רחב יותר.")
             st.stop()
+        stats  = compute_stats(trades, capital)
+
+        st.session_state["bt_trades"]    = trades
+        st.session_state["bt_stats"]     = stats
+        st.session_state["bt_capital"]   = capital
+        st.session_state["bt_symbol"]    = symbol
+        st.session_state["bt_m15"]       = m15
+        st.session_state["bt_trade_idx"] = 0
+    except Exception as e:
+        progress_bar.empty()
+        status_box.empty()
+        st.error(f"שגיאה: {e}")
+        st.stop()
 
 # ── Display results ───────────────────────────────────────────────────────────
 if "bt_stats" not in st.session_state:
-    st.info("בחר פרמטרים בסרגל הצד ולחץ **הרץ בקטסט**.")
+    st.info("בחר פרמטרים ולחץ **הרץ בקטסט**.")
     st.stop()
 
 stats   = st.session_state["bt_stats"]

@@ -18,20 +18,31 @@ st.set_page_config(
     initial_sidebar_state="collapsed",  # better default for mobile
 )
 
-from web.mobile_css import inject_mobile_css
+from web.mobile_css import inject_mobile_css, inject_bottom_nav
 inject_mobile_css()
+inject_bottom_nav("home")
 
 st.title("📊 SMC / ICT Dashboard")
 
-# Mobile-friendly nav cards
+# Mobile-friendly nav cards (HTML <a> tags - no dynamic JS module loading)
 st.markdown("### בחר עמוד")
-nav_c1, nav_c2, nav_c3 = st.columns(3)
-with nav_c1:
-    st.page_link("pages/1_Backtest.py", label="🔬 Backtest", use_container_width=True)
-with nav_c2:
-    st.page_link("pages/2_Scan.py", label="🔍 Scan", use_container_width=True)
-with nav_c3:
-    st.page_link("pages/3_Compare.py", label="📊 Compare", use_container_width=True)
+st.markdown("""
+<style>
+.nav-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem; width: 100%; max-width: 100%; }
+.nav-card { display: block; text-align: center; padding: 1rem 0.5rem; background: linear-gradient(135deg, #1e2130 0%, #2a2e39 100%); border: 1px solid #2a2e39; border-radius: 12px; text-decoration: none !important; color: #d1d4dc !important; font-size: 0.95rem; font-weight: 600; transition: all 0.15s ease; min-width: 0; }
+.nav-card:hover, .nav-card:active { background: linear-gradient(135deg, #00bcd4 0%, #0097a7 100%); color: white !important; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,188,212,0.3); }
+.nav-card .ico { display: block; font-size: 1.6rem; margin-bottom: 0.25rem; }
+@media (max-width: 480px) {
+  .nav-card { padding: 0.8rem 0.3rem; font-size: 0.85rem; }
+  .nav-card .ico { font-size: 1.4rem; }
+}
+</style>
+<div class="nav-grid">
+  <a class="nav-card" href="/Backtest" target="_self"><span class="ico">🔬</span>Backtest</a>
+  <a class="nav-card" href="/Scan" target="_self"><span class="ico">🔍</span>Scan</a>
+  <a class="nav-card" href="/Compare" target="_self"><span class="ico">📊</span>Compare</a>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("---")
 

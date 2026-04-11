@@ -48,6 +48,7 @@ def run_backtest(
     compound: bool = False,
     initial_capital: float = config.INITIAL_CAPITAL,
     risk_pct: float = 0.5,
+    progress_callback=None,
 ) -> list[Trade]:
     """
     Walk-forward bar-by-bar backtest.  Returns list of completed Trade objects.
@@ -105,6 +106,11 @@ def run_backtest(
             print(f"\r  {pct:5.1f}%  bar {i}/{len(m15_df)}  "
                   f"trades={len(all_trades)}  "
                   f"ETA {eta:.0f}s   ", end="", flush=True)
+            if progress_callback is not None:
+                try:
+                    progress_callback(pct / 100.0, len(all_trades), eta)
+                except Exception:
+                    pass
 
         # ── Step 1: manage open trade ─────────────────────────────────────────
         if open_trade is not None:
